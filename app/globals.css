@@ -837,85 +837,95 @@ input::selection {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 3px;
-  padding: 3px;
+  gap: 6px;
+  padding: 4px 5px 4px 8px;
   border-radius: 13px;
-  background: var(--surface-soft);
-}
-
-.timeline-navigation .timeline-zoom button {
-  width: auto;
-  min-width: 54px;
-  height: 30px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  padding: 0 8px;
+  background: var(--violet);
   color: #ffffff;
-  font-family: var(--font-geist-sans), sans-serif;
-  font-size: 9px;
 }
 
-.timeline-navigation .timeline-zoom button > span {
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 14px;
-  line-height: 1;
-}
-
-.timeline-navigation .timeline-zoom button > b {
-  font-size: 9px;
+.timeline-zoom > span {
+  flex: 0 0 auto;
+  font-size: 8px;
   font-weight: 800;
+  white-space: nowrap;
 }
 
-.timeline-navigation .timeline-zoom-compress {
+.timeline-zoom input[type="range"] {
+  width: 96px;
+  min-width: 62px;
+  height: 18px;
+  flex: 1 1 96px;
+  margin: 0;
+  appearance: none;
+  border-radius: 999px;
+  outline: 0;
+  background: linear-gradient(90deg, var(--sky), var(--sun));
+  cursor: ew-resize;
+  accent-color: var(--sun);
+}
+
+.timeline-zoom input[type="range"]::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--sky), var(--sun));
+}
+
+.timeline-zoom input[type="range"]::-webkit-slider-thumb {
+  width: 15px;
+  height: 15px;
+  margin-top: -5px;
+  appearance: none;
+  border: 3px solid #ffffff;
+  border-radius: 50%;
   background: var(--coral);
+  box-shadow: 0 2px 5px rgba(25, 25, 31, 0.24);
 }
 
-.timeline-navigation .timeline-zoom-stretch {
-  background: var(--sky);
+.timeline-zoom input[type="range"]::-moz-range-track {
+  height: 5px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--sky), var(--sun));
 }
 
-.timeline-navigation .timeline-zoom-fit {
-  min-width: 44px;
-  background: var(--sun);
-  color: var(--text);
-  font-weight: 850;
-}
-
-.timeline-navigation .timeline-zoom-compress:hover:not(:disabled) {
-  background: #ee405f;
-}
-
-.timeline-navigation .timeline-zoom-stretch:hover:not(:disabled) {
-  background: #078fe6;
-}
-
-.timeline-navigation .timeline-zoom-fit:hover:not(:disabled) {
-  background: #ffc400;
-  color: var(--text);
+.timeline-zoom input[type="range"]::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 3px solid #ffffff;
+  border-radius: 50%;
+  background: var(--coral);
+  box-shadow: 0 2px 5px rgba(25, 25, 31, 0.24);
 }
 
 .timeline-zoom output {
-  min-width: 72px;
+  min-width: 58px;
   height: 30px;
   display: flex;
-  align-items: baseline;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
-  gap: 2px;
-  padding: 7px 8px 0;
+  gap: 0;
+  padding: 2px 7px;
   border-radius: 10px;
-  background: var(--violet);
-  color: #ffffff;
+  background: #ffffff;
+  color: var(--text);
   font-family: var(--font-geist-mono), monospace;
-  font-size: 8px;
-  font-weight: 700;
   white-space: nowrap;
 }
 
 .timeline-zoom output strong {
   font-size: 11px;
   font-weight: 850;
+  line-height: 1;
+}
+
+.timeline-zoom output small {
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1.1;
 }
 
 .timeline-ruler {
@@ -1920,28 +1930,22 @@ input[type="range"] {
   }
 
   .timeline-navigation .timeline-zoom {
-    gap: 2px;
+    gap: 4px;
+    padding-left: 6px;
   }
 
-  .timeline-navigation .timeline-zoom button {
-    width: auto;
-    min-width: 29px;
-    padding-inline: 7px;
-  }
-
-  .timeline-navigation .timeline-zoom button > b,
-  .timeline-zoom output span {
+  .timeline-zoom > span {
     display: none;
   }
 
-  .timeline-zoom output {
-    min-width: 34px;
-    padding-inline: 6px;
+  .timeline-zoom input[type="range"] {
+    width: 82px;
+    min-width: 56px;
   }
 
-  .timeline-navigation .timeline-zoom-fit {
-    min-width: 39px;
-    padding-inline: 6px;
+  .timeline-zoom output {
+    min-width: 48px;
+    padding-inline: 5px;
   }
 
   .stage-status {
@@ -2081,25 +2085,19 @@ input[type="range"] {
 
   .timeline-navigation .timeline-zoom {
     justify-content: center;
-    padding: 2px;
+    gap: 3px;
+    padding: 2px 3px 2px 6px;
   }
 
-  .timeline-navigation .timeline-zoom button {
-    min-width: 27px;
-    height: 28px;
-    padding-inline: 5px;
+  .timeline-zoom input[type="range"] {
+    width: 58px;
+    min-width: 46px;
   }
 
   .timeline-zoom output {
-    min-width: 30px;
+    min-width: 42px;
     height: 28px;
-    padding-top: 6px;
-    padding-inline: 4px;
-  }
-
-  .timeline-navigation .timeline-zoom-fit {
-    min-width: 35px;
-    font-size: 8px;
+    padding-inline: 3px;
   }
 
   .tool-button kbd {

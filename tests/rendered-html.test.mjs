@@ -111,11 +111,20 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(page, /viewStartStep/);
   assert.match(page, /timelineZoomStops/);
   assert.match(page, /applyTimelineZoom/);
-  assert.match(page, /fitTimeline/);
   assert.match(page, /viewStepsRef\.current/);
-  assert.match(page, /压缩时间轴，一屏显示更多小节/);
-  assert.match(page, /拉长时间轴，精细查看更少小节/);
-  assert.match(page, /适应全曲，共/);
+  assert.match(page, /aria-label="时间轴缩放"/);
+  assert.match(page, /aria-valuetext=\{`一屏显示 \$\{viewBars\} 小节`\}/);
+  assert.match(page, /wheelStepRemainderRef/);
+  assert.match(page, /horizontalGesture/);
+  assert.match(page, /window\.addEventListener\("keydown", onKeyDown, true\)/);
+  assert.match(page, /window\.addEventListener\("keyup", onKeyUp, true\)/);
+  assert.match(page, /if \(!event\.repeat\) void play\(\)/);
+  const keyboardHandler = page.slice(
+    page.indexOf("const onKeyDown = (event: KeyboardEvent)"),
+    page.indexOf('window.addEventListener("keydown", onKeyDown, true)'),
+  );
+  assert.ok(keyboardHandler.indexOf('event.code === "Space"') < keyboardHandler.indexOf("event.target"));
+  assert.doesNotMatch(page, /timeline-zoom-(?:compress|stretch|fit)/);
   assert.doesNotMatch(page, /\bVIEW_STEPS\b/);
   assert.match(page, /indexedDB\.open/);
   assert.doesNotMatch(page, /MAX_SHAPES/);
@@ -125,9 +134,8 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(page, /onPointerDown/);
   assert.match(page, /E 平调子/);
   assert.match(css, /timeline-navigation/);
-  assert.match(css, /timeline-zoom-compress/);
-  assert.match(css, /timeline-zoom-stretch/);
-  assert.match(css, /timeline-zoom-fit/);
+  assert.match(css, /\.timeline-zoom input\[type="range"\]/);
+  assert.match(css, /cursor: ew-resize/);
   assert.match(css, /tool-pan/);
   assert.match(css, /rail-section--voices/);
   assert.match(css, /rail-section--tools/);

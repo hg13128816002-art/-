@@ -1505,6 +1505,7 @@ export default function Home() {
   const viewStartStepRef = useRef(0);
   const viewBarsRef = useRef(DEFAULT_VIEW_BARS);
   const viewStepsRef = useRef(DEFAULT_VIEW_STEPS);
+  const wheelStepRemainderRef = useRef(0);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoredRef = useRef(false);
@@ -1667,8 +1668,8 @@ export default function Home() {
   const zoomTimeline = useCallback(
     (direction: "compress" | "stretch", anchorStep?: number, anchorRatio = 0.5) => {
       const projectBars = projectEndStep(shapesRef.current) / STEPS_PER_BAR;
-      const stops = timelineZoomStops(projectBars);
       const current = viewBarsRef.current;
+      const stops = timelineZoomStops(Math.max(projectBars, current));
       const next =
         direction === "compress"
           ? stops.find((bars) => bars > current) ?? stops.at(-1) ?? current
@@ -1677,11 +1678,6 @@ export default function Home() {
     },
     [applyTimelineZoom],
   );
-
-  const fitTimeline = useCallback(() => {
-    const projectSteps = projectEndStep(shapesRef.current);
-    applyTimelineZoom(projectSteps / STEPS_PER_BAR, projectSteps / 2);
-  }, [applyTimelineZoom]);
 
   const play = useCallback(async () => {
     if (playing) {
@@ -2288,17 +2284,33 @@ export default function Home() {
   const onCanvasWheel = (event: ReactWheelEvent<HTMLCanvasElement>) => {
     event.preventDefault();
     if (event.ctrlKey || event.metaKey || event.altKey) {
+      wheelStepRemainderRef.current = 0;
       const bounds = event.currentTarget.getBoundingClientRect();
       const anchorRatio = clamp((event.clientX - bounds.left) / bounds.width);
       const anchorStep =
         viewStartStepRef.current + anchorRatio * viewStepsRef.current;
-      zoomTimeline(event.deltaY > 0 ? "compress" : "stretch", anchorStep, anchorRatio);
+      const zoomDelta =
+        Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+      if (zoomDelta !== 0) {
+        zoomTimeline(zoomDelta > 0 ? "compress" : "stretch", anchorStep, anchorRatio);
+      }
       return;
     }
-    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-    const direction = Math.sign(delta);
-    const distance = Math.max(1, Math.round(Math.abs(delta) / 18));
-    navigateToStep(viewStartStepRef.current + direction * distance);
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const horizontalGesture =
+      Math.abs(event.deltaX) > 0.01 &&
+      Math.abs(event.deltaX) >= Math.abs(event.deltaY) * 0.5;
+    const rawDelta = horizontalGesture ? event.deltaX : event.deltaY;
+    const pixelMultiplier =
+      event.deltaMode === 1 ? 18 : event.deltaMode === 2 ? bounds.width : 1;
+    const deltaSteps =
+      rawDelta * pixelMultiplier * (viewStepsRef.current / Math.max(1, bounds.width));
+    const accumulated = wheelStepRemainderRef.current + deltaSteps;
+    const wholeSteps = accumulated < 0 ? Math.ceil(accumulated) : Math.floor(accumulated);
+    wheelStepRemainderRef.current = accumulated - wholeSteps;
+    if (wholeSteps !== 0) {
+      navigateToStep(viewStartStepRef.current + wholeSteps);
+    }
   };
 
   const updateSelected = (patch: Partial<SoundShape>) => {
@@ -2531,6 +2543,12 @@ export default function Home() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code === "Space") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) void play();
+        return;
+      }
       const target = event.target as HTMLElement | null;
       if (
         target?.closest(
@@ -2545,10 +2563,7 @@ export default function Home() {
         else undo();
         return;
       }
-      if (event.code === "Space") {
-        event.preventDefault();
-        void play();
-      } else if (event.key.toLowerCase() === "v") setTool("select");
+      if (event.key.toLowerCase() === "v") setTool("select");
       else if (event.key.toLowerCase() === "b") setTool("draw");
       else if (event.key.toLowerCase() === "s") setTool("stamp");
       else if (event.key.toLowerCase() === "e") setTool("erase");
@@ -2562,8 +2577,17 @@ export default function Home() {
       }
       else if (event.key === "Delete" || event.key === "Backspace") deleteSelected();
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code !== "Space") return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+    };
   }, [deleteSelected, play, redo, undo, zoomTimeline]);
 
   const instrumentCounts = useMemo(
@@ -2585,6 +2609,14 @@ export default function Home() {
   const totalBeats = totalSteps / STEPS_PER_BEAT;
   const totalBars = totalSteps / STEPS_PER_BAR;
   const totalDuration = totalBeats * (60 / bpm);
+  const zoomStops = timelineZoomStops(Math.max(totalBars, viewBars));
+  const zoomSliderIndex = zoomStops.reduce(
+    (closestIndex, bars, index) =>
+      Math.abs(bars - viewBars) < Math.abs(zoomStops[closestIndex] - viewBars)
+        ? index
+        : closestIndex,
+    0,
+  );
   const displayBeat = Math.min(Math.max(0, playheadBeat), Math.max(0, totalBeats - EPSILON));
   const bar = Math.floor(displayBeat / BEATS_PER_BAR) + 1;
   const beat = Math.floor(displayBeat % BEATS_PER_BAR) + 1;
@@ -2976,38 +3008,24 @@ export default function Home() {
                 <b>当前 {firstVisibleBar}–{lastVisibleBar}</b>
               </label>
               <div className="timeline-zoom" role="group" aria-label="画布时间轴缩放">
-                <button
-                  type="button"
-                  className="timeline-zoom-compress"
-                  onClick={() => zoomTimeline("compress")}
-                  disabled={viewBars >= Math.max(BASE_PREVIEW_BARS, totalBars)}
-                  aria-label="压缩时间轴，一屏显示更多小节"
-                  title="压缩时间轴（−）"
-                >
-                  <span aria-hidden="true">−</span><b>压缩</b>
-                </button>
+                <span>拉长</span>
+                <input
+                  type="range"
+                  min="0"
+                  max={Math.max(0, zoomStops.length - 1)}
+                  step="1"
+                  value={zoomSliderIndex}
+                  onChange={(event) => {
+                    const nextBars = zoomStops[Number(event.target.value)] ?? viewBars;
+                    applyTimelineZoom(nextBars);
+                  }}
+                  aria-label="时间轴缩放"
+                  aria-valuetext={`一屏显示 ${viewBars} 小节`}
+                />
+                <span>压缩</span>
                 <output aria-live="polite">
-                  <strong>{viewBars}</strong><span> 小节/屏</span>
+                  <strong>{viewBars}</strong><small>小节/屏</small>
                 </output>
-                <button
-                  type="button"
-                  className="timeline-zoom-stretch"
-                  onClick={() => zoomTimeline("stretch")}
-                  disabled={viewBars <= 1}
-                  aria-label="拉长时间轴，精细查看更少小节"
-                  title="拉长时间轴（+）"
-                >
-                  <span aria-hidden="true">+</span><b>拉长</b>
-                </button>
-                <button
-                  type="button"
-                  className="timeline-zoom-fit"
-                  onClick={fitTimeline}
-                  aria-label={`适应全曲，共 ${totalBars} 小节`}
-                  title="让整首曲子适应当前画布"
-                >
-                  全曲
-                </button>
               </div>
               <div>
                 <button type="button" onClick={() => navigateToStep(viewStartStep + STEPS_PER_BAR)} title="向后一小节">+1</button>
@@ -3057,7 +3075,7 @@ export default function Home() {
             {tool === "stamp" && "拖拽印章：横向长度控制音长，纵向距离控制力度 · S"}
             {tool === "select" && "拖动声音事件改变时间与音高，右侧可精确编辑 · V"}
             {tool === "erase" && "划过声音事件即可擦除 · E"}
-            {tool === "pan" && "拖动画布前往任意时间；滚轮也可以横向浏览 · H"}
+            {tool === "pan" && "拖动画布前往任意时间；触控板横向滑动，鼠标滚轮也可浏览 · H"}
             <span>SPACE 播放 / 停止 · − 压缩 · + 拉长 · Ctrl/⌘/Alt + 滚轮缩放</span>
           </p>
         </section>
