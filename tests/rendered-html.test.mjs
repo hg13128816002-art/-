@@ -46,6 +46,16 @@ test("server-renders the finished Synesthesia Canvas shell", async () => {
   assert.match(html, /无限画布/);
   assert.match(html, /1\/16 · 无限延展/);
   assert.match(html, /不设上限/);
+  assert.match(html, /节奏模板/);
+  assert.match(html, /Four-on-the-floor/);
+  assert.match(html, /2-Step/);
+  assert.match(html, /Breakbeat/);
+  assert.match(html, /Half-time/);
+  assert.match(html, /Syncopated 16th/);
+  assert.match(html, /Drum &amp; Bass Two-Step/);
+  assert.match(html, /段落长度/);
+  assert.match(html, /复杂度/);
+  assert.match(html, /Swing/);
   assert.match(html, /icon\.svg/);
 
   const drumNames = ["活力鼓组", "和祭太鼓", "像素鼓机", "故障切片鼓", "霓虹祭典鼓"];
@@ -76,6 +86,18 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(page, /shape\.instrument === "chipDrums"/);
   assert.match(page, /shape\.instrument === "glitchDrums"/);
   assert.match(page, /shape\.instrument === "festivalDrums"/);
+  assert.match(page, /RHYTHM_PATTERNS/);
+  assert.match(page, /RHYTHM_LENGTHS.*1, 2, 4, 8/);
+  assert.match(page, /makeRhythmShapes/);
+  assert.match(page, /commitShapes\(\[\.\.\.shapesRef\.current, \.\.\.inserted\]\)/);
+  assert.match(page, /occupiedDrumSlots/);
+  assert.match(page, /shapeStartBeat\(shape, swing\)/);
+  assert.match(page, /swing\?: number/);
+  assert.match(page, /shouldNudgeDetail/);
+  assert.match(page, /role="dialog"/);
+  assert.match(page, /aria-modal="true"/);
+  assert.match(page, /button, a, summary/);
+  assert.doesNotMatch(page, /<strong>56% Swing/);
   assert.doesNotMatch(page, /\bvocal\b|泡沫人声/);
   assert.match(page, /setInterval\(pump/);
   assert.match(page, /viewStartStep/);
@@ -91,6 +113,9 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(css, /rail-section--voices/);
   assert.match(css, /rail-section--tools/);
   assert.match(css, /instrument-group-heading/);
+  assert.match(css, /rhythm-popover/);
+  assert.match(css, /rhythm-pattern-card/);
+  assert.match(css, /rhythm-parameters/);
   assert.match(css, /mini-shape--spark/);
   assert.match(css, /@media \(max-width: 780px\)/);
   assert.match(css, /prefers-reduced-motion/);

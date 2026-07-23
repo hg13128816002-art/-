@@ -28,6 +28,7 @@ type DrumInstrumentId =
   | "glitchDrums"
   | "festivalDrums";
 type InstrumentId = TonalInstrumentId | DrumInstrumentId;
+type DrumZone = "low" | "mid" | "high";
 type ToolId = "select" | "draw" | "stamp" | "erase" | "pan";
 type ShapeForm =
   | "triangle"
@@ -113,6 +114,37 @@ type StoredProject = {
   bpm: number;
   scale: ScaleId;
   title: string;
+  swing?: number;
+};
+
+type RhythmPatternId =
+  | "fourOnFloor"
+  | "twoStep"
+  | "breakbeat"
+  | "halfTime"
+  | "syncopated16"
+  | "dnbTwoStep";
+type RhythmLengthBars = 1 | 2 | 4 | 8;
+type RhythmComplexity = 1 | 2 | 3;
+type RhythmHit = {
+  key: string;
+  step: number;
+  instrument: DrumInstrumentId;
+  zone: DrumZone;
+  size: number;
+  durationSteps: 1 | 2;
+  pan: number;
+  level: RhythmComplexity;
+  variants?: readonly number[];
+};
+type RhythmPatternDefinition = {
+  id: RhythmPatternId;
+  name: string;
+  subtitle: string;
+  recommendedBpm: readonly [number, number];
+  color: string;
+  textColor: "dark" | "light";
+  hits: readonly RhythmHit[];
 };
 
 type Interaction =
@@ -358,6 +390,257 @@ function hashString(value: string) {
   return hash >>> 0;
 }
 
+function rhythmHit(
+  key: string,
+  step: number,
+  instrument: DrumInstrumentId,
+  zone: DrumZone,
+  size: number,
+  level: RhythmComplexity = 1,
+  pan = 0,
+  variants?: readonly number[],
+  durationSteps: 1 | 2 = instrument === "taiko" ? 2 : 1,
+): RhythmHit {
+  return { key, step, instrument, zone, size, durationSteps, pan, level, variants };
+}
+
+function rhythmHatLine(
+  prefix: string,
+  steps: readonly number[],
+  size: number,
+  level: RhythmComplexity = 1,
+  instrument: DrumInstrumentId = "chipDrums",
+): RhythmHit[] {
+  return steps.map((step, index) =>
+    rhythmHit(`${prefix}-${step}`, step, instrument, "high", size, level, index % 2 ? 0.3 : -0.3),
+  );
+}
+
+const RHYTHM_PATTERNS: readonly RhythmPatternDefinition[] = [
+  {
+    id: "fourOnFloor",
+    name: "Four-on-the-floor",
+    subtitle: "四踩节奏",
+    recommendedBpm: [124, 140],
+    color: "#ffd31a",
+    textColor: "dark",
+    hits: [
+      ...[0, 4, 8, 12].map((step, index) =>
+        rhythmHit(`kick-${step}`, step, "drums", "low", index % 2 ? 0.1 : 0.11),
+      ),
+      rhythmHit("clap-4", 4, "festivalDrums", "mid", 0.085, 1, -0.06),
+      rhythmHit("clap-12", 12, "festivalDrums", "mid", 0.09, 1, 0.06),
+      ...rhythmHatLine("hat", [2, 6, 10, 14], 0.045),
+      ...rhythmHatLine("closed", [0, 4, 8, 12], 0.035, 2, "drums"),
+      rhythmHit("glitch-3", 3, "glitchDrums", "high", 0.035, 3, -0.48, [1, 2]),
+      rhythmHit("glitch-7", 7, "glitchDrums", "high", 0.035, 3, 0.48, [2]),
+      rhythmHit("glitch-11", 11, "glitchDrums", "high", 0.035, 3, -0.48, [1, 2]),
+      rhythmHit("glitch-15", 15, "glitchDrums", "high", 0.035, 3, 0.48, [0, 2]),
+      rhythmHit("fill-13", 13, "glitchDrums", "mid", 0.04, 3, -0.42, [3]),
+      rhythmHit("fill-14", 14, "glitchDrums", "mid", 0.05, 3, 0.36, [3]),
+      rhythmHit("fill-15", 15, "glitchDrums", "mid", 0.065, 3, -0.22, [3]),
+    ],
+  },
+  {
+    id: "twoStep",
+    name: "2-Step",
+    subtitle: "错位底鼓与反拍",
+    recommendedBpm: [128, 145],
+    color: "#22a7ff",
+    textColor: "dark",
+    hits: [
+      rhythmHit("kick-0", 0, "drums", "low", 0.11),
+      rhythmHit("kick-7", 7, "drums", "low", 0.085, 1, -0.03),
+      rhythmHit("kick-10", 10, "drums", "low", 0.1, 1, 0.03),
+      rhythmHit("clap-4", 4, "festivalDrums", "mid", 0.09, 1, -0.06),
+      rhythmHit("clap-12", 12, "festivalDrums", "mid", 0.1, 1, 0.06),
+      ...rhythmHatLine("hat", [0, 2, 4, 6, 8, 10, 12, 14], 0.043),
+      rhythmHit("tick-5", 5, "glitchDrums", "high", 0.035, 2, 0.46),
+      rhythmHit("tick-13", 13, "glitchDrums", "high", 0.035, 2, -0.46),
+      rhythmHit("ghost-11", 11, "drums", "mid", 0.035, 2, -0.12),
+      rhythmHit("variant-low-15", 15, "chipDrums", "low", 0.06, 3, 0.04, [1]),
+      rhythmHit("variant-low-6", 6, "drums", "low", 0.07, 3, -0.03, [2]),
+      rhythmHit("variant-bell-9", 9, "festivalDrums", "high", 0.045, 3, 0.32, [0, 2]),
+      rhythmHit("fill-13", 13, "glitchDrums", "mid", 0.04, 3, -0.4, [3]),
+      rhythmHit("fill-14", 14, "glitchDrums", "mid", 0.05, 3, 0.35, [3]),
+      rhythmHit("fill-15", 15, "glitchDrums", "mid", 0.065, 3, -0.2, [3]),
+    ],
+  },
+  {
+    id: "breakbeat",
+    name: "Breakbeat",
+    subtitle: "碎拍",
+    recommendedBpm: [130, 155],
+    color: "#ff526f",
+    textColor: "dark",
+    hits: [
+      rhythmHit("kick-0", 0, "drums", "low", 0.11),
+      rhythmHit("kick-6", 6, "drums", "low", 0.085, 1, -0.03),
+      rhythmHit("kick-10", 10, "drums", "low", 0.1, 1, 0.03),
+      rhythmHit("snare-4", 4, "drums", "mid", 0.1, 1, -0.04),
+      rhythmHit("snare-12", 12, "drums", "mid", 0.11, 1, 0.04),
+      ...rhythmHatLine("hat", [0, 2, 4, 6, 8, 10, 12, 14], 0.042),
+      rhythmHit("ghost-7", 7, "drums", "mid", 0.035, 2, 0.14),
+      rhythmHit("ghost-11", 11, "drums", "mid", 0.04, 2, -0.14),
+      rhythmHit("layer-4", 4, "festivalDrums", "mid", 0.055, 2, 0.08),
+      rhythmHit("layer-12", 12, "festivalDrums", "mid", 0.055, 2, -0.08),
+      rhythmHit("variant-kick-3", 3, "drums", "low", 0.07, 3, -0.04, [2]),
+      rhythmHit("variant-kick-14", 14, "glitchDrums", "low", 0.065, 3, 0.06, [0, 2]),
+      rhythmHit("variant-tick-1", 1, "glitchDrums", "high", 0.035, 3, -0.5, [1, 2]),
+      rhythmHit("variant-tick-9", 9, "glitchDrums", "high", 0.035, 3, 0.5, [1]),
+      rhythmHit("fill-13", 13, "glitchDrums", "mid", 0.04, 3, -0.4, [3]),
+      rhythmHit("fill-14", 14, "glitchDrums", "mid", 0.05, 3, 0.35, [3]),
+      rhythmHit("fill-15", 15, "glitchDrums", "mid", 0.065, 3, -0.2, [3]),
+    ],
+  },
+  {
+    id: "halfTime",
+    name: "Half-time",
+    subtitle: "半拍律动",
+    recommendedBpm: [135, 155],
+    color: "#7657ff",
+    textColor: "light",
+    hits: [
+      rhythmHit("kick-0", 0, "drums", "low", 0.12),
+      rhythmHit("kick-6", 6, "drums", "low", 0.085, 1, -0.03),
+      rhythmHit("kick-11", 11, "drums", "low", 0.08, 1, 0.03),
+      rhythmHit("snare-8", 8, "festivalDrums", "mid", 0.12),
+      rhythmHit("taiko-0", 0, "taiko", "low", 0.07, 1, 0, undefined, 2),
+      ...rhythmHatLine("hat", [0, 2, 4, 6, 8, 10, 12, 14], 0.04),
+      rhythmHit("ghost-7", 7, "drums", "mid", 0.035, 2, -0.14),
+      rhythmHit("bell-4", 4, "festivalDrums", "high", 0.045, 2, -0.28),
+      rhythmHit("bell-12", 12, "festivalDrums", "high", 0.045, 2, 0.28),
+      rhythmHit("glitch-3", 3, "glitchDrums", "high", 0.035, 3, -0.48, [1, 2]),
+      rhythmHit("glitch-7", 7, "glitchDrums", "high", 0.035, 3, 0.48, [1, 2]),
+      rhythmHit("glitch-11", 11, "glitchDrums", "high", 0.035, 3, -0.48, [1, 2]),
+      rhythmHit("glitch-15", 15, "glitchDrums", "high", 0.035, 3, 0.48, [1, 2]),
+      rhythmHit("fill-13", 13, "taiko", "mid", 0.045, 3, -0.3, [3], 1),
+      rhythmHit("fill-14", 14, "taiko", "mid", 0.055, 3, 0.25, [3], 1),
+      rhythmHit("fill-15", 15, "taiko", "mid", 0.07, 3, 0, [3], 1),
+    ],
+  },
+  {
+    id: "syncopated16",
+    name: "Syncopated 16th",
+    subtitle: "十六分切分",
+    recommendedBpm: [128, 150],
+    color: "#ff8a00",
+    textColor: "dark",
+    hits: [
+      rhythmHit("kick-0", 0, "drums", "low", 0.11),
+      rhythmHit("kick-3", 3, "drums", "low", 0.08, 1, -0.03),
+      rhythmHit("kick-6", 6, "drums", "low", 0.085, 1, 0.03),
+      rhythmHit("kick-10", 10, "drums", "low", 0.1, 1, -0.03),
+      rhythmHit("kick-13", 13, "drums", "low", 0.08, 1, 0.03),
+      rhythmHit("clap-4", 4, "festivalDrums", "mid", 0.09, 1, -0.06),
+      rhythmHit("clap-12", 12, "festivalDrums", "mid", 0.095, 1, 0.06),
+      ...rhythmHatLine("hat", [0, 2, 4, 6, 8, 10, 12, 14], 0.04),
+      ...rhythmHatLine("off-hat", [1, 5, 9, 13], 0.032, 2),
+      rhythmHit("ghost-7", 7, "drums", "mid", 0.035, 2, 0.12),
+      rhythmHit("ghost-15", 15, "drums", "mid", 0.035, 2, -0.12),
+      rhythmHit("glitch-3", 3, "glitchDrums", "high", 0.035, 3, -0.5, [1, 2]),
+      rhythmHit("glitch-7", 7, "glitchDrums", "high", 0.035, 3, 0.5, [1, 2]),
+      rhythmHit("glitch-11", 11, "glitchDrums", "high", 0.035, 3, -0.5, [1, 2]),
+      rhythmHit("glitch-15", 15, "glitchDrums", "high", 0.035, 3, 0.5, [1, 2]),
+      rhythmHit("fill-13", 13, "glitchDrums", "mid", 0.04, 3, -0.4, [3]),
+      rhythmHit("fill-14", 14, "glitchDrums", "mid", 0.05, 3, 0.35, [3]),
+      rhythmHit("fill-15", 15, "glitchDrums", "mid", 0.065, 3, -0.2, [3]),
+    ],
+  },
+  {
+    id: "dnbTwoStep",
+    name: "Drum & Bass Two-Step",
+    subtitle: "高速二步节奏",
+    recommendedBpm: [165, 178],
+    color: "#18d2e8",
+    textColor: "dark",
+    hits: [
+      rhythmHit("kick-0", 0, "drums", "low", 0.12),
+      rhythmHit("kick-10", 10, "drums", "low", 0.11),
+      rhythmHit("snare-4", 4, "drums", "mid", 0.11, 1, -0.04),
+      rhythmHit("snare-12", 12, "drums", "mid", 0.12, 1, 0.04),
+      ...rhythmHatLine("hat", [0, 2, 4, 6, 8, 10, 12, 14], 0.045),
+      rhythmHit("layer-4", 4, "festivalDrums", "mid", 0.055, 2, 0.08),
+      rhythmHit("layer-12", 12, "festivalDrums", "mid", 0.055, 2, -0.08),
+      rhythmHit("ghost-11", 11, "drums", "mid", 0.035, 2, -0.14),
+      rhythmHit("glitch-1", 1, "glitchDrums", "high", 0.032, 3, -0.52, [1, 2]),
+      rhythmHit("glitch-3", 3, "glitchDrums", "high", 0.032, 3, 0.52, [1, 2]),
+      rhythmHit("glitch-7", 7, "glitchDrums", "high", 0.032, 3, -0.52, [1, 2]),
+      rhythmHit("glitch-9", 9, "glitchDrums", "high", 0.032, 3, 0.52, [1, 2]),
+      rhythmHit("glitch-13", 13, "glitchDrums", "high", 0.032, 3, -0.52, [1, 2]),
+      rhythmHit("glitch-15", 15, "glitchDrums", "high", 0.032, 3, 0.52, [1, 2]),
+      rhythmHit("variant-kick-7", 7, "drums", "low", 0.075, 3, -0.02, [1, 2]),
+      rhythmHit("fill-13", 13, "glitchDrums", "mid", 0.04, 3, -0.4, [3]),
+      rhythmHit("fill-14", 14, "glitchDrums", "mid", 0.05, 3, 0.35, [3]),
+      rhythmHit("fill-15", 15, "glitchDrums", "mid", 0.065, 3, -0.2, [3]),
+    ],
+  },
+];
+
+const RHYTHM_LENGTHS: readonly RhythmLengthBars[] = [1, 2, 4, 8];
+const RHYTHM_ZONE_Y: Record<DrumZone, number> = { low: 0.82, mid: 0.5, high: 0.18 };
+const RHYTHM_VARIANT_SEQUENCES: Record<RhythmLengthBars, readonly number[]> = {
+  1: [0],
+  2: [0, 1],
+  4: [0, 1, 2, 3],
+  8: [0, 1, 0, 2, 0, 1, 2, 3],
+};
+
+function makeRhythmShapes(
+  patternId: RhythmPatternId,
+  startStep: number,
+  bars: RhythmLengthBars,
+  complexity: RhythmComplexity,
+  variantOffset: number,
+): SoundShape[] {
+  const pattern = RHYTHM_PATTERNS.find((item) => item.id === patternId) ?? RHYTHM_PATTERNS[0];
+  const sequence = RHYTHM_VARIANT_SEQUENCES[bars];
+  const shapes: SoundShape[] = [];
+  for (let barIndex = 0; barIndex < bars; barIndex += 1) {
+    const sequenceVariant = sequence[barIndex % sequence.length];
+    const activeVariant =
+      variantOffset === 3 && barIndex === bars - 1
+        ? 3
+        : sequenceVariant === 3
+          ? complexity === 3 ? 3 : 2
+          : (sequenceVariant + variantOffset) % 3;
+    const sizeMultiplier = [1, 0.97, 1.02, 1][barIndex % 4];
+    for (const hit of pattern.hits) {
+      if (hit.level > complexity || (hit.variants && !hit.variants.includes(activeVariant))) {
+        continue;
+      }
+      const detailHash = hashString(`${pattern.id}-${hit.key}`);
+      const shouldNudgeDetail =
+        hit.level === 2 &&
+        !hit.variants &&
+        variantOffset > 0 &&
+        detailHash % 2 === 0;
+      const detailNudge = variantOffset === 1
+        ? 1
+        : variantOffset === 2
+          ? -1
+          : detailHash % 4 < 2 ? 1 : -1;
+      const stepWithinBar =
+        (hit.step + (shouldNudgeDetail ? detailNudge : 0) + STEPS_PER_BAR) % STEPS_PER_BAR;
+      const absoluteStep = startStep + barIndex * STEPS_PER_BAR + stepWithinBar;
+      const rotationHash = hashString(`${pattern.id}-${variantOffset}-${barIndex}-${hit.key}`);
+      const rotation = ((rotationHash % 21) - 10) / 100;
+      const isCentral = Math.abs(hit.pan) <= 0.04;
+      shapes.push({
+        id: makeId(),
+        startStep: absoluteStep,
+        durationSteps: hit.durationSteps,
+        y: RHYTHM_ZONE_Y[hit.zone],
+        size: clamp(hit.size * sizeMultiplier, 0.03, 0.14),
+        pan: isCentral || barIndex % 2 === 0 ? hit.pan : -hit.pan,
+        instrument: hit.instrument,
+        rotation,
+      });
+    }
+  }
+  return shapes;
+}
+
 function seededNoise(seed: number) {
   let value = seed || 1;
   return () => {
@@ -526,10 +809,10 @@ function eventVelocity(shape: SoundShape) {
   return clamp(0.3 + Math.sqrt(clamp(shape.size / 0.16)) * 0.6, 0.25, 0.92);
 }
 
-function shapeStartBeat(shape: SoundShape) {
+function shapeStartBeat(shape: SoundShape, swing = 0.56) {
   const step = Math.max(0, Math.round(shape.startStep));
-  const swing = step % 2 === 1 ? 0.03 : 0;
-  return step / STEPS_PER_BEAT + swing;
+  const swingDelay = step % 2 === 1 ? (clamp(swing, 0.5, 0.66) - 0.5) * 0.5 : 0;
+  return step / STEPS_PER_BEAT + swingDelay;
 }
 
 function projectEndStep(shapes: SoundShape[]) {
@@ -887,7 +1170,6 @@ function scheduleTone(
   }
 }
 
-type DrumZone = "low" | "mid" | "high";
 type DrumFilterSettings = {
   type: BiquadFilterType;
   frequency: number;
@@ -1229,6 +1511,8 @@ export default function Home() {
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoredRef = useRef(false);
+  const rhythmPanelRef = useRef<HTMLElement>(null);
+  const rhythmTriggerRef = useRef<HTMLButtonElement>(null);
 
   const [shapes, setShapes] = useState<SoundShape[]>([]);
   const [instrument, setInstrument] = useState<InstrumentId>("keys");
@@ -1251,11 +1535,19 @@ export default function Home() {
   const [clearArmed, setClearArmed] = useState(false);
   const [projectTitle, setProjectTitle] = useState("春日回响 01");
   const [saved, setSaved] = useState(true);
+  const [swing, setSwing] = useState(0.56);
+  const [rhythmPanelOpen, setRhythmPanelOpen] = useState(false);
+  const [rhythmPattern, setRhythmPattern] = useState<RhythmPatternId>("fourOnFloor");
+  const [rhythmLength, setRhythmLength] = useState<RhythmLengthBars>(2);
+  const [rhythmComplexity, setRhythmComplexity] = useState<RhythmComplexity>(2);
+  const [rhythmVariant, setRhythmVariant] = useState(0);
 
   const selectedShape = useMemo(
     () => shapes.find((shape) => shape.id === selectedId) ?? null,
     [selectedId, shapes],
   );
+  const selectedRhythmDefinition =
+    RHYTHM_PATTERNS.find((pattern) => pattern.id === rhythmPattern) ?? RHYTHM_PATTERNS[0];
 
   const setShapesDirect = useCallback((next: SoundShape[]) => {
     shapesRef.current = next;
@@ -1295,6 +1587,11 @@ export default function Home() {
     setToast(message);
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToast(""), 2800);
+  }, []);
+
+  const closeRhythmPanel = useCallback(() => {
+    setRhythmPanelOpen(false);
+    requestAnimationFrame(() => rhythmTriggerRef.current?.focus());
   }, []);
 
   const undo = useCallback(() => {
@@ -1382,7 +1679,7 @@ export default function Home() {
     const events = shapesRef.current
       .map((shape) => ({
         shape: { ...shape },
-        offsetSeconds: shapeStartBeat(shape) * secondsPerBeat,
+        offsetSeconds: shapeStartBeat(shape, swing) * secondsPerBeat,
       }))
       .sort((left, right) => left.offsetSeconds - right.offsetSeconds);
     transportRef.current = {
@@ -1468,7 +1765,7 @@ export default function Home() {
       animationRef.current = requestAnimationFrame(animate);
     };
     animationRef.current = requestAnimationFrame(animate);
-  }, [bpm, muted, playing, scale, showToast, stopPlayback, volume]);
+  }, [bpm, muted, playing, scale, showToast, stopPlayback, swing, volume]);
 
   const drawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -1672,6 +1969,7 @@ export default function Home() {
           if (typeof project.bpm === "number") setBpm(clamp(project.bpm, 90, 180));
           if (isScaleId(project.scale)) setScale(project.scale);
           if (typeof project.title === "string") setProjectTitle(project.title.slice(0, 36));
+          if (typeof project.swing === "number") setSwing(clamp(project.swing, 0.5, 0.66));
           if (encoded) showToast("共享作品已载入，可以直接 Remix");
         } else if (project) {
           showToast("已启用新版无限画布；旧练习稿未迁移");
@@ -1691,16 +1989,56 @@ export default function Home() {
   useEffect(() => {
     if (!restoredRef.current) return;
     const timer = setTimeout(() => {
-      void saveStoredProject({ version: 2, shapes, bpm, scale, title: projectTitle })
+      void saveStoredProject({ version: 2, shapes, bpm, scale, title: projectTitle, swing })
         .then(() => setSaved(true))
         .catch(() => showToast("本机存储空间不足，但当前画布仍可继续创作"));
     }, 420);
     return () => clearTimeout(timer);
-  }, [bpm, projectTitle, scale, shapes, showToast]);
+  }, [bpm, projectTitle, scale, shapes, showToast, swing]);
 
   useEffect(() => {
     loopRef.current = loop;
   }, [loop]);
+
+  useEffect(() => {
+    if (!rhythmPanelOpen) return;
+    const focusFrame = requestAnimationFrame(() => {
+      rhythmPanelRef.current?.querySelector<HTMLElement>("button:not([disabled])")?.focus();
+    });
+    const handleRhythmKeys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeRhythmPanel();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const panel = rhythmPanelRef.current;
+      if (!panel) return;
+      const focusable = Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])",
+        ),
+      ).filter((item) => item.offsetParent !== null);
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (!first || !last) return;
+      if (!panel.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleRhythmKeys);
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      window.removeEventListener("keydown", handleRhythmKeys);
+    };
+  }, [closeRhythmPanel, rhythmPanelOpen]);
 
   useEffect(() => {
     if (audioGraphRef.current) {
@@ -1944,6 +2282,7 @@ export default function Home() {
     setSelectedId(null);
     setBpm(132);
     setScale("hirajoshi");
+    setSwing(0.56);
     navigateToStep(0);
     showToast("已载入 4 小节 Complextro 示例");
   };
@@ -1970,8 +2309,47 @@ export default function Home() {
     showToast("变奏完成：保留节奏，重新编排了旋律走向");
   };
 
+  const insertRhythmPattern = () => {
+    const startStep = Math.floor(viewStartStepRef.current / STEPS_PER_BAR) * STEPS_PER_BAR;
+    const generated = makeRhythmShapes(
+      rhythmPattern,
+      startStep,
+      rhythmLength,
+      rhythmComplexity,
+      rhythmVariant,
+    );
+    const occupiedDrumSlots = new Set(
+      shapesRef.current
+        .filter((shape) => isDrumInstrument(shape.instrument))
+        .map((shape) => `${Math.round(shape.startStep)}:${drumZone(shape.y)}`),
+    );
+    const inserted = generated.filter(
+      (shape) => !occupiedDrumSlots.has(`${Math.round(shape.startStep)}:${drumZone(shape.y)}`),
+    );
+    const skipped = generated.length - inserted.length;
+    if (!inserted.length) {
+      showToast(`第 ${startStep / STEPS_PER_BAR + 1} 小节已有鼓点，没有覆盖原内容`);
+      return;
+    }
+    if (playing) stopPlayback();
+    commitShapes([...shapesRef.current, ...inserted]);
+    setSelectedId(null);
+    navigateToStep(startStep);
+    closeRhythmPanel();
+    showToast(
+      `已插入 ${selectedRhythmDefinition.name} · ${rhythmLength} 小节 · ${inserted.length} 个鼓点${skipped ? `，避开 ${skipped} 个已有位置` : ""}`,
+    );
+  };
+
   const shareProject = async () => {
-    const payload = JSON.stringify({ version: 2, shapes: shapesRef.current, bpm, scale, title: projectTitle });
+    const payload = JSON.stringify({
+      version: 2,
+      shapes: shapesRef.current,
+      bpm,
+      scale,
+      title: projectTitle,
+      swing,
+    });
     if (payload.length > 900_000) {
       showToast("大型作品已完整保存在本机；当前作品过大，不适合放进分享链接");
       return;
@@ -2013,7 +2391,7 @@ export default function Home() {
       );
       const padFrames = Math.ceil(sampleRate * 0.02);
       const prepared = shapesRef.current
-        .map((shape) => ({ shape: { ...shape }, startSeconds: shapeStartBeat(shape) * secondsPerBeat }))
+        .map((shape) => ({ shape: { ...shape }, startSeconds: shapeStartBeat(shape, swing) * secondsPerBeat }))
         .sort((left, right) => left.startSeconds - right.startSeconds);
       const safeTitle = projectTitle.replace(/[^\w\u4e00-\u9fa5-]+/g, "-").replace(/-+/g, "-");
       const fileName = `${safeTitle || "synesthesia-canvas"}-${bpm}bpm.wav`;
@@ -2098,7 +2476,13 @@ export default function Home() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.matches("input, select, textarea")) return;
+      if (
+        target?.closest(
+          "input, select, textarea, button, a, summary, [contenteditable='true']",
+        )
+      ) {
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) redo();
@@ -2343,8 +2727,170 @@ export default function Home() {
               <span>大小 = 力度</span><i />
               <span>声像 = 独立控制</span>
             </div>
-            <button type="button" className="mutation-button" onClick={remix}>生成变奏</button>
+            <div className="stage-status-actions">
+              <button
+                ref={rhythmTriggerRef}
+                type="button"
+                className={`rhythm-trigger ${rhythmPanelOpen ? "is-active" : ""}`}
+                aria-expanded={rhythmPanelOpen}
+                aria-controls="rhythm-panel"
+                onClick={() => {
+                  if (rhythmPanelOpen) closeRhythmPanel();
+                  else setRhythmPanelOpen(true);
+                }}
+              >
+                节奏模板
+              </button>
+              <button type="button" className="mutation-button" onClick={remix}>生成变奏</button>
+            </div>
           </div>
+
+          <section
+            ref={rhythmPanelRef}
+            id="rhythm-panel"
+            className="rhythm-popover"
+            aria-label="节奏模板生成器"
+            role="dialog"
+            aria-modal="true"
+            hidden={!rhythmPanelOpen}
+          >
+            <header className="rhythm-heading">
+              <div>
+                <p className="eyebrow">节奏生成器</p>
+                <h2>把鼓点加入当前小节</h2>
+                <p>生成后仍可逐个移动、换音色或删除，也能一步撤销。</p>
+              </div>
+              <div className="rhythm-heading-actions">
+                <span>混合鼓组</span>
+                <button
+                  type="button"
+                  aria-label="关闭节奏模板"
+                  onClick={closeRhythmPanel}
+                >
+                  ×
+                </button>
+              </div>
+            </header>
+
+            <div className="rhythm-pattern-strip" role="group" aria-label="选择节奏型">
+              {RHYTHM_PATTERNS.map((pattern) => (
+                <button
+                  type="button"
+                  key={pattern.id}
+                  className={`rhythm-pattern-card rhythm-pattern-card--${pattern.textColor} ${rhythmPattern === pattern.id ? "is-active" : ""}`}
+                  style={{ "--rhythm-color": pattern.color } as CSSProperties}
+                  aria-pressed={rhythmPattern === pattern.id}
+                  onClick={() => {
+                    setRhythmPattern(pattern.id);
+                    setRhythmVariant(0);
+                  }}
+                >
+                  <span className="rhythm-card-check" aria-hidden="true">✓</span>
+                  <span className="rhythm-card-copy">
+                    <strong>{pattern.name}</strong>
+                    <small>{pattern.subtitle}</small>
+                  </span>
+                  <span className="rhythm-card-grid" aria-hidden="true">
+                    {Array.from({ length: STEPS_PER_BAR }, (_, step) => {
+                      const stepHits = pattern.hits.filter(
+                        (hit) => hit.level === 1 && hit.step === step,
+                      );
+                      const zone = stepHits.some((hit) => hit.zone === "low")
+                        ? "low"
+                        : stepHits.some((hit) => hit.zone === "mid")
+                          ? "mid"
+                          : stepHits.some((hit) => hit.zone === "high")
+                            ? "high"
+                            : "empty";
+                      return <i key={step} className={`is-${zone}`} />;
+                    })}
+                  </span>
+                  <span className="rhythm-card-bpm">
+                    {pattern.recommendedBpm[0]}–{pattern.recommendedBpm[1]} BPM
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            <div className="rhythm-parameters">
+              <fieldset className="rhythm-control">
+                <legend>段落长度</legend>
+                <div className="rhythm-segments">
+                  {RHYTHM_LENGTHS.map((bars) => (
+                    <button
+                      type="button"
+                      key={bars}
+                      aria-pressed={rhythmLength === bars}
+                      className={rhythmLength === bars ? "is-active" : ""}
+                      onClick={() => setRhythmLength(bars)}
+                    >
+                      {bars} 小节
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+
+              <fieldset className="rhythm-control">
+                <legend>复杂度</legend>
+                <div className="rhythm-segments rhythm-complexity">
+                  {([
+                    [1, "基础"],
+                    [2, "细节"],
+                    [3, "密集"],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      type="button"
+                      key={value}
+                      aria-pressed={rhythmComplexity === value}
+                      className={rhythmComplexity === value ? "is-active" : ""}
+                      onClick={() => setRhythmComplexity(value)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+
+              <label className="rhythm-control rhythm-swing">
+                <span>
+                  <strong>Swing</strong>
+                  <output>{Math.round(swing * 100)}%</output>
+                </span>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="0.66"
+                  step="0.01"
+                  value={swing}
+                  onChange={(event) => {
+                    if (playing) stopPlayback();
+                    setSwing(clamp(Number(event.target.value), 0.5, 0.66));
+                    setSaved(false);
+                  }}
+                />
+                <small>50% 为平直十六分音符，增加后反拍会稍晚出现。</small>
+              </label>
+            </div>
+
+            <div className="rhythm-actions">
+              <div>
+                <strong>{selectedRhythmDefinition.name}</strong>
+                <span>
+                  变体 {rhythmVariant + 1} · 第 {firstVisibleBar} 小节开始
+                </span>
+              </div>
+              <button
+                type="button"
+                className="rhythm-variant"
+                onClick={() => setRhythmVariant((variant) => (variant + 1) % 4)}
+              >
+                换一个变体
+              </button>
+              <button type="button" className="rhythm-insert" onClick={insertRhythmPattern}>
+                插入 {rhythmLength} 小节
+              </button>
+            </div>
+          </section>
 
           <div className="timeline-strip">
             <div className="timeline-navigation" aria-label="无限画布导航">
@@ -2497,7 +3043,7 @@ export default function Home() {
               </div>
               <div className="analysis-card analysis-card--accent">
                 <p className="eyebrow">Complextro 律动</p>
-                <strong>56% Swing · 动态呼吸</strong>
+                <strong>{Math.round(swing * 100)}% Swing · 动态呼吸</strong>
                 <span>快速音色切换、碎拍细节与鼓组侧链已自动加入作品。</span>
               </div>
             </>
