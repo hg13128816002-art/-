@@ -8,19 +8,68 @@ import {
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
+import { createWavHeader, encodePcm16, suggestWavFile, type WavWritableStream } from "./wav";
 
-type InstrumentId = "brass" | "organ" | "keys" | "drums" | "strings";
-type ToolId = "select" | "draw" | "stamp" | "erase";
-type ShapeForm = "triangle" | "ring" | "diamond" | "block" | "wave";
-type ScaleId = "hirajoshi" | "minor" | "pentatonic";
+type TonalInstrumentId =
+  | "brass"
+  | "organ"
+  | "keys"
+  | "strings"
+  | "pluck"
+  | "bass"
+  | "chord"
+  | "flute";
+type DrumInstrumentId =
+  | "drums"
+  | "taiko"
+  | "chipDrums"
+  | "glitchDrums"
+  | "festivalDrums";
+type InstrumentId = TonalInstrumentId | DrumInstrumentId;
+type ToolId = "select" | "draw" | "stamp" | "erase" | "pan";
+type ShapeForm =
+  | "triangle"
+  | "ring"
+  | "diamond"
+  | "block"
+  | "wave"
+  | "spark"
+  | "capsule"
+  | "petal"
+  | "slash"
+  | "drop";
+type ScaleId =
+  | "hirajoshi"
+  | "in"
+  | "insen"
+  | "iwato"
+  | "yo"
+  | "major"
+  | "minor"
+  | "harmonicMinor"
+  | "dorian"
+  | "lydian"
+  | "pentatonic"
+  | "phrygianDominant"
+  | "wholeTone";
+type ScaleGroup = "和风五声" | "旋律调式" | "电子色彩";
+
+type ScaleDefinition = {
+  name: string;
+  root: number;
+  intervals: number[];
+  group: ScaleGroup;
+};
 
 type SoundShape = {
   id: string;
-  x: number;
+  startStep: number;
+  durationSteps: number;
   y: number;
-  width: number;
   size: number;
+  pan: number;
   instrument: InstrumentId;
   rotation: number;
 };
@@ -31,6 +80,7 @@ type Instrument = {
   name: string;
   subtitle: string;
   color: string;
+  accent: string;
   form: ShapeForm;
   defaultSize: number;
 };
@@ -42,87 +92,235 @@ type AudioGraph = {
   master: GainNode;
 };
 
+type PreparedEvent = {
+  shape: SoundShape;
+  offsetSeconds: number;
+};
+
+type TransportState = {
+  token: number;
+  origin: number;
+  duration: number;
+  secondsPerBeat: number;
+  cycle: number;
+  eventIndex: number;
+  events: PreparedEvent[];
+};
+
+type StoredProject = {
+  version: 2;
+  shapes: SoundShape[];
+  bpm: number;
+  scale: ScaleId;
+  title: string;
+};
+
 type Interaction =
-  | { kind: "draw"; pointerId: number; lastX: number; lastY: number }
-  | { kind: "erase"; pointerId: number; lastX: number; lastY: number }
+  | { kind: "draw"; pointerId: number; lastStep: number; lastY: number }
+  | { kind: "erase"; pointerId: number; lastStep: number; lastY: number }
   | {
       kind: "stamp";
       pointerId: number;
       id: string;
-      startX: number;
+      startStep: number;
       startY: number;
     }
   | {
       kind: "move";
       pointerId: number;
       id: string;
-      offsetX: number;
+      offsetStep: number;
       offsetY: number;
+    }
+  | {
+      kind: "pan";
+      pointerId: number;
+      startClientX: number;
+      startViewStep: number;
     };
 
 const EPSILON = 0.0001;
-const MAX_SHAPES = 180;
-const BAR_BEATS = 16;
+const STEPS_PER_BEAT = 4;
+const BEATS_PER_BAR = 4;
+const STEPS_PER_BAR = STEPS_PER_BEAT * BEATS_PER_BAR;
+const VIEW_BARS = 4;
+const VIEW_STEPS = VIEW_BARS * STEPS_PER_BAR;
+const DEFAULT_PROJECT_STEPS = VIEW_STEPS;
+const MAX_NOTE_STEPS = 64;
+const LOOKAHEAD_SECONDS = 0.24;
+const LATE_GRACE_SECONDS = 0.08;
+const SCHEDULER_TICK_MS = 40;
+const START_DELAY_SECONDS = 0.08;
+const PROJECT_DB = "synesthesia-canvas-v2";
+const PROJECT_STORE = "projects";
+const PROJECT_KEY = "current";
 
 const INSTRUMENTS: Instrument[] = [
   {
     id: "brass",
     code: "01",
-    name: "NEON BRASS",
-    subtitle: "霓虹铜管",
-    color: "#ffd84d",
+    name: "明亮铜管",
+    subtitle: "清脆 · 有冲劲",
+    color: "#ffbf19",
+    accent: "#ff4f9a",
     form: "triangle",
     defaultSize: 0.072,
   },
   {
     id: "organ",
     code: "02",
-    name: "PIXEL ORGAN",
-    subtitle: "像素风琴",
-    color: "#41e7ff",
+    name: "泡泡风琴",
+    subtitle: "圆润 · 有颗粒",
+    color: "#22a7ff",
+    accent: "#ffd31a",
     form: "ring",
     defaultSize: 0.067,
   },
   {
     id: "keys",
     code: "03",
-    name: "GLASS KEYS",
-    subtitle: "玻璃键音",
-    color: "#ff4fba",
+    name: "玻璃琴键",
+    subtitle: "轻盈 · 闪亮",
+    color: "#ff4f9a",
+    accent: "#22a7ff",
     form: "diamond",
     defaultSize: 0.061,
   },
   {
     id: "drums",
     code: "04",
-    name: "CIRCUIT DRUMS",
-    subtitle: "电路鼓组",
-    color: "#baff4a",
+    name: "活力鼓组",
+    subtitle: "清爽 · 有弹性",
+    color: "#ff7338",
+    accent: "#7657ff",
     form: "block",
     defaultSize: 0.054,
   },
   {
     id: "strings",
     code: "05",
-    name: "SAKURA STRINGS",
-    subtitle: "樱色弦乐",
-    color: "#9879ff",
+    name: "樱花弦乐",
+    subtitle: "柔和 · 有延展",
+    color: "#8a68ff",
+    accent: "#20c8ff",
     form: "wave",
     defaultSize: 0.082,
   },
+  {
+    id: "pluck",
+    code: "06",
+    name: "电光三味线",
+    subtitle: "圆润 · 木质弹拨",
+    color: "#ffe600",
+    accent: "#ff3f9b",
+    form: "spark",
+    defaultSize: 0.058,
+  },
+  {
+    id: "bass",
+    code: "07",
+    name: "电光贝斯",
+    subtitle: "低沉 · 弹跳切片",
+    color: "#8b72ff",
+    accent: "#ff7417",
+    form: "capsule",
+    defaultSize: 0.076,
+  },
+  {
+    id: "chord",
+    code: "08",
+    name: "虹彩和弦",
+    subtitle: "宽阔 · 未来感",
+    color: "#ff55d7",
+    accent: "#16bdff",
+    form: "petal",
+    defaultSize: 0.09,
+  },
+  {
+    id: "flute",
+    code: "09",
+    name: "竹风主奏",
+    subtitle: "清亮 · 和风呼吸",
+    color: "#a7e51c",
+    accent: "#7657ff",
+    form: "drop",
+    defaultSize: 0.065,
+  },
+  {
+    id: "taiko",
+    code: "10",
+    name: "和祭太鼓",
+    subtitle: "深沉 · 祭典回响",
+    color: "#ff334f",
+    accent: "#ffd600",
+    form: "ring",
+    defaultSize: 0.086,
+  },
+  {
+    id: "chipDrums",
+    code: "11",
+    name: "像素鼓机",
+    subtitle: "轻快 · 8-bit 碎拍",
+    color: "#00bfff",
+    accent: "#6c4cff",
+    form: "block",
+    defaultSize: 0.055,
+  },
+  {
+    id: "glitchDrums",
+    code: "12",
+    name: "故障切片鼓",
+    subtitle: "凶脆 · 跳切翻转",
+    color: "#7456ff",
+    accent: "#ff4f9a",
+    form: "slash",
+    defaultSize: 0.064,
+  },
+  {
+    id: "festivalDrums",
+    code: "13",
+    name: "霓虹祭典鼓",
+    subtitle: "明亮 · 拍手铃音",
+    color: "#ff8a00",
+    accent: "#ffe600",
+    form: "spark",
+    defaultSize: 0.072,
+  },
 ];
 
-const SCALES: Record<ScaleId, { name: string; root: number; intervals: number[] }> = {
-  hirajoshi: { name: "E HIRAJOSHI", root: 40, intervals: [0, 2, 3, 7, 8] },
-  minor: { name: "F♯ MINOR", root: 42, intervals: [0, 2, 3, 5, 7, 8, 10] },
-  pentatonic: { name: "A MIN. PENTA", root: 45, intervals: [0, 3, 5, 7, 10] },
+const DRUM_INSTRUMENTS = new Set<DrumInstrumentId>([
+  "drums",
+  "taiko",
+  "chipDrums",
+  "glitchDrums",
+  "festivalDrums",
+]);
+
+const SCALES: Record<ScaleId, ScaleDefinition> = {
+  hirajoshi: { name: "E 平调子", root: 40, intervals: [0, 2, 3, 7, 8], group: "和风五声" },
+  in: { name: "D 阴音阶 · 樱花", root: 38, intervals: [0, 1, 5, 7, 8], group: "和风五声" },
+  insen: { name: "D 阴旋音阶", root: 38, intervals: [0, 1, 5, 7, 10], group: "和风五声" },
+  iwato: { name: "E 岩户音阶", root: 40, intervals: [0, 1, 5, 6, 10], group: "和风五声" },
+  yo: { name: "D 阳音阶", root: 38, intervals: [0, 2, 5, 7, 9], group: "和风五声" },
+  major: { name: "C 自然大调", root: 36, intervals: [0, 2, 4, 5, 7, 9, 11], group: "旋律调式" },
+  minor: { name: "F♯ 自然小调", root: 42, intervals: [0, 2, 3, 5, 7, 8, 10], group: "旋律调式" },
+  harmonicMinor: { name: "F♯ 和声小调", root: 42, intervals: [0, 2, 3, 5, 7, 8, 11], group: "旋律调式" },
+  dorian: { name: "D 多利亚", root: 38, intervals: [0, 2, 3, 5, 7, 9, 10], group: "旋律调式" },
+  lydian: { name: "C 利底亚", root: 36, intervals: [0, 2, 4, 6, 7, 9, 11], group: "旋律调式" },
+  pentatonic: { name: "A 小调五声音阶", root: 45, intervals: [0, 3, 5, 7, 10], group: "电子色彩" },
+  phrygianDominant: { name: "E 弗里吉亚属", root: 40, intervals: [0, 1, 4, 5, 7, 8, 10], group: "电子色彩" },
+  wholeTone: { name: "C 全音音阶", root: 36, intervals: [0, 2, 4, 6, 8, 10], group: "电子色彩" },
 };
+
+const SCALE_GROUPS: ScaleGroup[] = ["和风五声", "旋律调式", "电子色彩"];
+const SCALE_ENTRIES = Object.entries(SCALES) as [ScaleId, ScaleDefinition][];
 
 const TOOL_ITEMS: { id: ToolId; key: string; glyph: string; label: string }[] = [
   { id: "select", key: "V", glyph: "⌖", label: "选择 / 移动" },
   { id: "draw", key: "B", glyph: "∿", label: "声音画笔" },
   { id: "stamp", key: "S", glyph: "◇", label: "图形印章" },
   { id: "erase", key: "E", glyph: "⌫", label: "擦除" },
+  { id: "pan", key: "H", glyph: "↔", label: "平移画布" },
 ];
 
 function clamp(value: number, min = 0, max = 1) {
@@ -157,6 +355,88 @@ function getInstrument(id: InstrumentId) {
   return INSTRUMENTS.find((instrument) => instrument.id === id) ?? INSTRUMENTS[0];
 }
 
+function isScaleId(value: unknown): value is ScaleId {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(SCALES, value);
+}
+
+function isInstrumentId(value: unknown): value is InstrumentId {
+  return INSTRUMENTS.some((item) => item.id === value);
+}
+
+function isDrumInstrument(value: InstrumentId): value is DrumInstrumentId {
+  return DRUM_INSTRUMENTS.has(value as DrumInstrumentId);
+}
+
+function normalizeShape(value: unknown): SoundShape | null {
+  if (!value || typeof value !== "object") return null;
+  const shape = value as Partial<SoundShape>;
+  if (
+    typeof shape.id !== "string" ||
+    !isInstrumentId(shape.instrument) ||
+    !Number.isFinite(shape.startStep) ||
+    !Number.isFinite(shape.durationSteps) ||
+    !Number.isFinite(shape.y) ||
+    !Number.isFinite(shape.size) ||
+    !Number.isFinite(shape.pan) ||
+    !Number.isFinite(shape.rotation)
+  ) {
+    return null;
+  }
+  return {
+    id: shape.id,
+    instrument: shape.instrument,
+    startStep: Math.max(0, Math.round(shape.startStep as number)),
+    durationSteps: clamp(Math.round(shape.durationSteps as number), 1, MAX_NOTE_STEPS),
+    y: clamp(shape.y as number),
+    size: clamp(shape.size as number, 0.035, 0.18),
+    pan: clamp(shape.pan as number, -1, 1),
+    rotation: shape.rotation as number,
+  };
+}
+
+function openProjectDatabase() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(PROJECT_DB, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(PROJECT_STORE)) {
+        request.result.createObjectStore(PROJECT_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function loadStoredProject(): Promise<StoredProject | null> {
+  if (typeof indexedDB === "undefined") return null;
+  const database = await openProjectDatabase();
+  try {
+    return await new Promise<StoredProject | null>((resolve, reject) => {
+      const transaction = database.transaction(PROJECT_STORE, "readonly");
+      const request = transaction.objectStore(PROJECT_STORE).get(PROJECT_KEY);
+      request.onsuccess = () => resolve((request.result as StoredProject | undefined) ?? null);
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    database.close();
+  }
+}
+
+async function saveStoredProject(project: StoredProject) {
+  if (typeof indexedDB === "undefined") return;
+  const database = await openProjectDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(PROJECT_STORE, "readwrite");
+      transaction.objectStore(PROJECT_STORE).put(project, PROJECT_KEY);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+  } finally {
+    database.close();
+  }
+}
+
 function midiFromShape(shape: SoundShape, scaleId: ScaleId) {
   const scale = SCALES[scaleId];
   const degrees = scale.intervals.length * 4;
@@ -171,6 +451,14 @@ function midiFromShape(shape: SoundShape, scaleId: ScaleId) {
     keys: [52, 90],
     drums: [36, 60],
     strings: [50, 86],
+    pluck: [58, 94],
+    bass: [36, 62],
+    chord: [48, 78],
+    flute: [60, 91],
+    taiko: [36, 55],
+    chipDrums: [48, 72],
+    glitchDrums: [36, 72],
+    festivalDrums: [45, 76],
   };
   const [low, high] = range[shape.instrument];
   while (midi < low) midi += 12;
@@ -188,16 +476,35 @@ function midiToName(midi: number) {
 }
 
 function eventDuration(shape: SoundShape) {
-  const raw = 0.25 + clamp(shape.width, 0.02, 0.34) * 7;
-  const values = [0.25, 0.5, 0.75, 1, 1.5, 2, 4];
-  const closest = values.reduce((best, value) =>
-    Math.abs(value - raw) < Math.abs(best - raw) ? value : best,
-  );
-  if (shape.instrument === "drums") return 0.25;
-  if (shape.instrument === "brass" || shape.instrument === "keys") {
-    return Math.min(1.5, closest);
-  }
-  return closest;
+  if (shape.instrument === "taiko") return 0.5;
+  if (shape.instrument === "festivalDrums") return 0.375;
+  if (isDrumInstrument(shape.instrument)) return 0.25;
+  return clamp(Math.round(shape.durationSteps), 1, MAX_NOTE_STEPS) / STEPS_PER_BEAT;
+}
+
+function defaultDurationSteps(instrument: InstrumentId, stamp = false) {
+  const brushDurations: Record<InstrumentId, number> = {
+    brass: 1,
+    organ: 2,
+    keys: 1,
+    drums: 1,
+    strings: 4,
+    pluck: 1,
+    bass: 2,
+    chord: 4,
+    flute: 2,
+    taiko: 2,
+    chipDrums: 1,
+    glitchDrums: 1,
+    festivalDrums: 1,
+  };
+  if (!stamp) return brushDurations[instrument];
+  if (isDrumInstrument(instrument)) return brushDurations[instrument];
+  return instrument === "strings"
+    ? 8
+    : instrument === "chord"
+      ? 6
+      : Math.max(2, brushDurations[instrument] * 2);
 }
 
 function eventVelocity(shape: SoundShape) {
@@ -205,9 +512,32 @@ function eventVelocity(shape: SoundShape) {
 }
 
 function shapeStartBeat(shape: SoundShape) {
-  const step = Math.min(63, Math.round(clamp(shape.x) * 63));
+  const step = Math.max(0, Math.round(shape.startStep));
   const swing = step % 2 === 1 ? 0.03 : 0;
-  return step / 4 + swing;
+  return step / STEPS_PER_BEAT + swing;
+}
+
+function projectEndStep(shapes: SoundShape[]) {
+  let end = DEFAULT_PROJECT_STEPS;
+  for (const shape of shapes) {
+    end = Math.max(end, shape.startStep + shape.durationSteps);
+  }
+  return Math.ceil(end / STEPS_PER_BAR) * STEPS_PER_BAR;
+}
+
+function effectTailSeconds(bpm: number) {
+  return 0.9 + 6 * (0.75 * 60 / bpm);
+}
+
+function formatDuration(seconds: number) {
+  if (seconds < 60) return `${seconds.toFixed(1)} 秒`;
+  const total = Math.round(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const remaining = total % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`
+    : `${minutes}:${String(remaining).padStart(2, "0")}`;
 }
 
 function makeNoiseBuffer(context: BaseAudioContext, seconds: number, seed: number) {
@@ -216,6 +546,28 @@ function makeNoiseBuffer(context: BaseAudioContext, seconds: number, seed: numbe
   const data = buffer.getChannelData(0);
   const random = seededNoise(seed);
   for (let index = 0; index < length; index += 1) data[index] = random();
+  return buffer;
+}
+
+function makeChipNoiseBuffer(
+  context: BaseAudioContext,
+  seconds: number,
+  seed: number,
+  levels = 8,
+  holdSamples = 6,
+) {
+  const length = Math.max(1, Math.ceil(context.sampleRate * seconds));
+  const buffer = context.createBuffer(1, length, context.sampleRate);
+  const data = buffer.getChannelData(0);
+  const random = seededNoise(seed);
+  let held = 0;
+  for (let index = 0; index < length; index += 1) {
+    if (index % holdSamples === 0) {
+      const normalized = (random() + 1) * 0.5;
+      held = (Math.round(normalized * (levels - 1)) / (levels - 1)) * 2 - 1;
+    }
+    data[index] = held;
+  }
   return buffer;
 }
 
@@ -241,7 +593,7 @@ function createAudioGraph(context: BaseAudioContext, bpm: number, volume: number
   const master = context.createGain();
 
   tonal.gain.value = 0.72;
-  drums.gain.value = 0.9;
+  drums.gain.value = 0.82;
   pump.gain.value = 1;
   delay.delayTime.value = (60 / bpm) * 0.75;
   feedback.gain.value = 0.2;
@@ -293,15 +645,28 @@ function scheduleTone(
 ) {
   const frequency = midiToFrequency(midiFromShape(shape, scale));
   const velocity = eventVelocity(shape);
-  const pan = shape.x * 1.44 - 0.72;
+  const pan = shape.pan * (shape.instrument === "bass" ? 0.32 : 0.72);
   const seed = hashString(shape.id);
   const variant = seed & 3;
   const amp = context.createGain();
   const filter = context.createBiquadFilter();
   filter.type = "lowpass";
-  filter.Q.value = shape.instrument === "brass" ? 4.5 : 1.1;
+  filter.Q.value =
+    shape.instrument === "brass"
+      ? 4.5
+      : shape.instrument === "pluck"
+        ? 1.65
+        : shape.instrument === "bass"
+          ? 6.5
+          : 1.1;
   filter.frequency.setValueAtTime(
-    shape.instrument === "strings" ? 2600 : 6200,
+    shape.instrument === "strings"
+      ? 2600
+      : shape.instrument === "bass"
+        ? 900
+        : shape.instrument === "flute"
+          ? 5200
+          : 6200,
     time,
   );
   filter.connect(amp);
@@ -329,6 +694,46 @@ function scheduleTone(
     oscillator.stop(end + 0.75);
     registerSource(oscillator, bucket);
     oscillators.push(oscillator);
+    return oscillator;
+  };
+
+  const addNoiseLayer = (
+    filterType: BiquadFilterType,
+    filterFrequency: number,
+    level: number,
+    loopNoise = false,
+  ) => {
+    const noise = context.createBufferSource();
+    const noiseFilter = context.createBiquadFilter();
+    const noiseGain = context.createGain();
+    noise.buffer = makeNoiseBuffer(
+      context,
+      loopNoise ? 0.22 : Math.min(0.42, Math.max(0.08, seconds)),
+      seed ^ 0x9e3779b9,
+    );
+    noise.loop = loopNoise;
+    noiseFilter.type = filterType;
+    noiseFilter.frequency.value = filterFrequency;
+    noiseFilter.Q.value = filterType === "bandpass" ? 1.4 : 0.7;
+    noiseGain.gain.value = level;
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(amp);
+    noise.start(time);
+    noise.stop(loopNoise ? end + 0.2 : Math.min(end + 0.08, time + 0.5));
+    registerSource(noise, bucket);
+  };
+
+  const addVibrato = (depth: number, rate: number) => {
+    const lfo = context.createOscillator();
+    const lfoGain = context.createGain();
+    lfo.frequency.value = rate;
+    lfoGain.gain.value = depth;
+    lfo.connect(lfoGain);
+    oscillators.forEach((oscillator) => lfoGain.connect(oscillator.detune));
+    lfo.start(time);
+    lfo.stop(end + 0.55);
+    registerSource(lfo, bucket);
   };
 
   if (shape.instrument === "brass") {
@@ -351,7 +756,7 @@ function scheduleTone(
     filter.frequency.value = 9800;
     amp.gain.exponentialRampToValueAtTime(velocity * 0.72, time + 0.003);
     amp.gain.exponentialRampToValueAtTime(velocity * 0.12, Math.min(end, time + 0.15));
-  } else {
+  } else if (shape.instrument === "strings") {
     addOscillator("sawtooth", 1, -9, 0.1);
     addOscillator("sawtooth", 1, 9, 0.1);
     addOscillator("triangle", 0.5, 0, 0.065);
@@ -359,20 +764,99 @@ function scheduleTone(
     filter.frequency.exponentialRampToValueAtTime(5200, time + 0.12);
     amp.gain.exponentialRampToValueAtTime(velocity * 0.42, time + 0.075);
     amp.gain.exponentialRampToValueAtTime(velocity * 0.3, Math.min(end, time + 0.26));
+  } else if (shape.instrument === "pluck") {
+    const attack = addOscillator("triangle", 1, variant % 2 ? 3 : -3, 0.072);
+    addOscillator("sine", 2, -2, 0.032);
+    addOscillator("sine", 3, 2, 0.009);
+    const stringExciter = context.createBufferSource();
+    const exciterGain = context.createGain();
+    const stringDelay = context.createDelay(0.1);
+    const stringDamping = context.createBiquadFilter();
+    const stringFeedback = context.createGain();
+    const stringLevel = context.createGain();
+    stringExciter.buffer = makeNoiseBuffer(context, 0.018, seed ^ 0x85ebca6b);
+    stringDelay.delayTime.setValueAtTime(Math.min(0.1, 1 / frequency), time);
+    exciterGain.gain.value = 0.14;
+    stringDamping.type = "lowpass";
+    stringDamping.frequency.setValueAtTime(2900, time);
+    stringDamping.frequency.exponentialRampToValueAtTime(1450, end + 0.25);
+    stringFeedback.gain.setValueAtTime(0.8, time);
+    stringFeedback.gain.exponentialRampToValueAtTime(0.57, end);
+    stringFeedback.gain.exponentialRampToValueAtTime(EPSILON, end + 0.36);
+    stringLevel.gain.value = 0.16;
+    stringExciter.connect(exciterGain);
+    exciterGain.connect(stringDelay);
+    stringDelay.connect(stringDamping);
+    stringDamping.connect(stringFeedback);
+    stringFeedback.connect(stringDelay);
+    stringDelay.connect(stringLevel);
+    stringLevel.connect(amp);
+    stringExciter.start(time);
+    stringExciter.stop(time + 0.02);
+    registerSource(stringExciter, bucket);
+    attack.frequency.setValueAtTime(Math.min(10000, frequency * 1.12), time);
+    attack.frequency.exponentialRampToValueAtTime(frequency, time + 0.032);
+    filter.frequency.setValueAtTime(5200, time);
+    filter.frequency.exponentialRampToValueAtTime(1050, Math.min(end, time + 0.22));
+    amp.gain.exponentialRampToValueAtTime(velocity * 0.48, time + 0.007);
+    amp.gain.exponentialRampToValueAtTime(velocity * 0.075, Math.min(end, time + 0.21));
+  } else if (shape.instrument === "bass") {
+    const body = addOscillator("sawtooth", 1, -4, 0.13);
+    addOscillator("sine", 0.5, 0, 0.19);
+    addOscillator("square", 1, 7, 0.032);
+    body.frequency.setValueAtTime(Math.min(10000, frequency * 1.75), time);
+    body.frequency.exponentialRampToValueAtTime(frequency, time + 0.035);
+    filter.frequency.setValueAtTime(180, time);
+    filter.frequency.exponentialRampToValueAtTime(3600, time + 0.027);
+    filter.frequency.exponentialRampToValueAtTime(440, Math.min(end, time + 0.22));
+    amp.gain.exponentialRampToValueAtTime(velocity * 0.76, time + 0.004);
+    amp.gain.exponentialRampToValueAtTime(velocity * 0.31, Math.min(end, time + 0.13));
+  } else if (shape.instrument === "chord") {
+    const fifth = 2 ** (7 / 12);
+    addOscillator("sawtooth", 1, -10, 0.052);
+    addOscillator("sawtooth", 1, 10, 0.052);
+    addOscillator("triangle", fifth, -5, 0.065);
+    addOscillator("sawtooth", 2, 5, 0.038);
+    filter.frequency.setValueAtTime(1500, time);
+    const chordOpenTime = Math.min(end, time + 0.085);
+    filter.frequency.exponentialRampToValueAtTime(8200, chordOpenTime);
+    if (end > chordOpenTime + 0.001) {
+      filter.frequency.exponentialRampToValueAtTime(3100, Math.min(end, time + 0.5));
+    }
+    amp.gain.exponentialRampToValueAtTime(velocity * 0.45, time + 0.024);
+    amp.gain.exponentialRampToValueAtTime(velocity * 0.29, Math.min(end, time + 0.21));
+  } else {
+    addOscillator("sine", 1, -2, 0.17);
+    addOscillator("triangle", 2, 3, 0.026);
+    addOscillator("sine", 3, 0, 0.009);
+    addNoiseLayer("bandpass", 2750, 0.018, true);
+    filter.frequency.setValueAtTime(3500, time);
+    filter.frequency.exponentialRampToValueAtTime(6100, time + 0.09);
+    amp.gain.exponentialRampToValueAtTime(velocity * 0.42, time + 0.038);
+    amp.gain.exponentialRampToValueAtTime(velocity * 0.27, Math.min(end, time + 0.24));
+    addVibrato(7.5, 5.25 + variant * 0.14);
   }
 
-  const releaseLevel =
-    shape.instrument === "keys"
-      ? velocity * 0.12
-      : shape.instrument === "brass"
-        ? velocity * 0.24
-        : shape.instrument === "organ"
-          ? velocity * 0.34
-          : velocity * 0.3;
+  const envelope: Record<TonalInstrumentId, [number, number]> = {
+    brass: [0.24, 0.28],
+    organ: [0.34, 0.3],
+    keys: [0.12, 0.28],
+    strings: [0.3, 0.62],
+    pluck: [0.04, 0.2],
+    bass: [0.24, 0.24],
+    chord: [0.28, 0.56],
+    flute: [0.25, 0.48],
+  };
+  const [sustain, release] = envelope[shape.instrument as TonalInstrumentId];
+  const releaseLevel = sustain <= EPSILON ? EPSILON : velocity * sustain;
   amp.gain.setValueAtTime(Math.max(EPSILON, releaseLevel), end);
-  amp.gain.exponentialRampToValueAtTime(EPSILON, end + (shape.instrument === "strings" ? 0.62 : 0.28));
+  amp.gain.exponentialRampToValueAtTime(EPSILON, end + release);
 
-  if (variant === 3 && shape.width > 0.07 && shape.instrument !== "strings") {
+  if (
+    variant === 3 &&
+    shape.durationSteps >= 4 &&
+    !["strings", "chord", "flute", "pluck"].includes(shape.instrument)
+  ) {
     const glitch = context.createOscillator();
     const glitchGain = context.createGain();
     glitch.type = "square";
@@ -388,6 +872,142 @@ function scheduleTone(
   }
 }
 
+type DrumZone = "low" | "mid" | "high";
+type DrumFilterSettings = {
+  type: BiquadFilterType;
+  frequency: number;
+  q?: number;
+};
+
+function drumZone(y: number): DrumZone {
+  return y >= 0.68 ? "low" : y >= 0.34 ? "mid" : "high";
+}
+
+function drumPieceName(shape: SoundShape) {
+  if (!isDrumInstrument(shape.instrument)) return "旋律音符";
+  const names: Record<DrumInstrumentId, Record<DrumZone, string>> = {
+    drums: { low: "弹性底鼓", mid: "清脆军鼓", high: "亮色踩镲" },
+    taiko: { low: "大太鼓", mid: "締太鼓", high: "拍子木" },
+    chipDrums: { low: "像素底鼓", mid: "8-bit 军鼓", high: "像素踩镲" },
+    glitchDrums: { low: "切片底鼓", mid: "碎片军鼓", high: "故障点拍" },
+    festivalDrums: { low: "祭典重鼓", mid: "霓虹拍手", high: "铃音沙锤" },
+  };
+  return names[shape.instrument][drumZone(shape.y)];
+}
+
+function shapePitchLabel(shape: SoundShape, scale: ScaleId) {
+  return isDrumInstrument(shape.instrument)
+    ? drumPieceName(shape)
+    : midiToName(midiFromShape(shape, scale));
+}
+
+function triggerDrumPump(graph: AudioGraph, time: number, depth: number, release: number) {
+  graph.pump.gain.cancelScheduledValues(time);
+  graph.pump.gain.setValueAtTime(Math.max(EPSILON, depth), time);
+  graph.pump.gain.exponentialRampToValueAtTime(1, time + release);
+}
+
+function scheduleDrumOscillator(
+  context: BaseAudioContext,
+  destination: AudioNode,
+  time: number,
+  settings: {
+    type: OscillatorType;
+    startFrequency: number;
+    endFrequency?: number;
+    pitchDuration?: number;
+    duration: number;
+    level: number;
+    pan: number;
+    filter?: DrumFilterSettings;
+  },
+  bucket?: Set<AudioScheduledSourceNode>,
+) {
+  const oscillator = context.createOscillator();
+  const amp = context.createGain();
+  oscillator.type = settings.type;
+  oscillator.frequency.setValueAtTime(Math.max(1, settings.startFrequency), time);
+  if (settings.endFrequency) {
+    oscillator.frequency.exponentialRampToValueAtTime(
+      Math.max(1, settings.endFrequency),
+      time + Math.min(settings.duration, settings.pitchDuration ?? settings.duration * 0.5),
+    );
+  }
+  amp.gain.setValueAtTime(EPSILON, time);
+  amp.gain.exponentialRampToValueAtTime(
+    Math.max(EPSILON, settings.level),
+    time + Math.min(0.003, settings.duration * 0.2),
+  );
+  amp.gain.exponentialRampToValueAtTime(EPSILON, time + settings.duration);
+  if (settings.filter) {
+    const filter = context.createBiquadFilter();
+    filter.type = settings.filter.type;
+    filter.frequency.value = settings.filter.frequency;
+    filter.Q.value = settings.filter.q ?? 0.7;
+    oscillator.connect(filter);
+    filter.connect(amp);
+  } else {
+    oscillator.connect(amp);
+  }
+  connectWithPan(context, amp, destination, settings.pan);
+  oscillator.start(time);
+  oscillator.stop(time + settings.duration + 0.03);
+  registerSource(oscillator, bucket);
+}
+
+function scheduleDrumNoise(
+  context: BaseAudioContext,
+  destination: AudioNode,
+  time: number,
+  seed: number,
+  settings: {
+    duration: number;
+    level: number;
+    pan: number;
+    filter: DrumFilterSettings;
+    secondFilter?: DrumFilterSettings;
+    chip?: { levels: number; holdSamples: number };
+  },
+  bucket?: Set<AudioScheduledSourceNode>,
+) {
+  const source = context.createBufferSource();
+  const filter = context.createBiquadFilter();
+  const secondFilter = settings.secondFilter ? context.createBiquadFilter() : null;
+  const amp = context.createGain();
+  source.buffer = settings.chip
+    ? makeChipNoiseBuffer(
+        context,
+        settings.duration + 0.02,
+        seed,
+        settings.chip.levels,
+        settings.chip.holdSamples,
+      )
+    : makeNoiseBuffer(context, settings.duration + 0.02, seed);
+  filter.type = settings.filter.type;
+  filter.frequency.value = settings.filter.frequency;
+  filter.Q.value = settings.filter.q ?? 0.8;
+  amp.gain.setValueAtTime(EPSILON, time);
+  amp.gain.exponentialRampToValueAtTime(
+    Math.max(EPSILON, settings.level),
+    time + Math.min(0.0025, settings.duration * 0.2),
+  );
+  amp.gain.exponentialRampToValueAtTime(EPSILON, time + settings.duration);
+  source.connect(filter);
+  if (secondFilter && settings.secondFilter) {
+    secondFilter.type = settings.secondFilter.type;
+    secondFilter.frequency.value = settings.secondFilter.frequency;
+    secondFilter.Q.value = settings.secondFilter.q ?? 0.7;
+    filter.connect(secondFilter);
+    secondFilter.connect(amp);
+  } else {
+    filter.connect(amp);
+  }
+  connectWithPan(context, amp, destination, settings.pan);
+  source.start(time);
+  source.stop(time + settings.duration + 0.025);
+  registerSource(source, bucket);
+}
+
 function scheduleDrum(
   context: BaseAudioContext,
   graph: AudioGraph,
@@ -395,163 +1015,177 @@ function scheduleDrum(
   time: number,
   bucket?: Set<AudioScheduledSourceNode>,
 ) {
+  if (!isDrumInstrument(shape.instrument)) return;
   const velocity = eventVelocity(shape);
-  const pan = shape.x * 1.1 - 0.55;
+  const pan = shape.pan * 0.55;
   const seed = hashString(shape.id);
+  const zone = drumZone(shape.y);
 
-  if (shape.y > 0.7) {
-    const oscillator = context.createOscillator();
-    const amp = context.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(165, time);
-    oscillator.frequency.exponentialRampToValueAtTime(45, time + 0.1);
-    amp.gain.setValueAtTime(velocity * 0.86, time);
-    amp.gain.exponentialRampToValueAtTime(EPSILON, time + 0.24);
-    oscillator.connect(amp);
-    connectWithPan(context, amp, graph.drums, pan * 0.2);
-    oscillator.start(time);
-    oscillator.stop(time + 0.26);
-    registerSource(oscillator, bucket);
-    graph.pump.gain.setValueAtTime(0.48, time);
-    graph.pump.gain.exponentialRampToValueAtTime(1, time + 0.14);
+  if (shape.instrument === "taiko") {
+    if (zone === "low") {
+      scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: 138, endFrequency: 48, pitchDuration: 0.07, duration: 0.58, level: velocity * 0.34, pan: pan * 0.18, filter: { type: "lowpass", frequency: 1100 } }, bucket);
+      scheduleDrumOscillator(context, graph.drums, time, { type: "triangle", startFrequency: 78, endFrequency: 46, pitchDuration: 0.12, duration: 0.42, level: velocity * 0.12, pan: -pan * 0.12 }, bucket);
+      scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.09, level: velocity * 0.07, pan, filter: { type: "bandpass", frequency: 240, q: 0.85 }, secondFilter: { type: "lowpass", frequency: 1500 } }, bucket);
+      triggerDrumPump(graph, time, 0.68, 0.14);
+    } else if (zone === "mid") {
+      scheduleDrumOscillator(context, graph.drums, time, { type: "triangle", startFrequency: 270, endFrequency: 165, pitchDuration: 0.065, duration: 0.18, level: velocity * 0.13, pan: pan * 0.2 }, bucket);
+      scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.14, level: velocity * 0.16, pan, filter: { type: "bandpass", frequency: 1900, q: 1.2 }, secondFilter: { type: "lowpass", frequency: 4800 } }, bucket);
+      scheduleDrumNoise(context, graph.drums, time, seed ^ 0x9e37, { duration: 0.026, level: velocity * 0.035, pan: -pan, filter: { type: "highpass", frequency: 3600 }, secondFilter: { type: "lowpass", frequency: 6200 } }, bucket);
+    } else {
+      scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: 920, duration: 0.15, level: velocity * 0.07, pan, filter: { type: "lowpass", frequency: 4800 } }, bucket);
+      scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: 1510, duration: 0.1, level: velocity * 0.032, pan: -pan, filter: { type: "lowpass", frequency: 4800 } }, bucket);
+      scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.035, level: velocity * 0.03, pan, filter: { type: "bandpass", frequency: 2900, q: 2 }, secondFilter: { type: "lowpass", frequency: 4800 } }, bucket);
+    }
     return;
   }
 
-  const noise = context.createBufferSource();
-  const amp = context.createGain();
-  const filter = context.createBiquadFilter();
-  const isSnare = shape.y > 0.39;
-  const isHat = shape.y > 0.16;
-  const duration = isSnare ? 0.17 : isHat ? 0.065 : 0.12;
-  noise.buffer = makeNoiseBuffer(context, duration + 0.02, seed);
-  filter.type = isSnare ? "bandpass" : "highpass";
-  filter.frequency.value = isSnare ? 1850 : isHat ? 7200 : 5100;
-  filter.Q.value = isSnare ? 0.8 : 1.4;
-  amp.gain.setValueAtTime(velocity * (isSnare ? 0.42 : 0.23), time);
-  amp.gain.exponentialRampToValueAtTime(EPSILON, time + duration);
-  noise.connect(filter);
-  filter.connect(amp);
-  connectWithPan(context, amp, graph.drums, pan);
-  noise.start(time);
-  noise.stop(time + duration + 0.02);
-  registerSource(noise, bucket);
+  if (shape.instrument === "chipDrums") {
+    if (zone === "low") {
+      scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: 110, endFrequency: 45, pitchDuration: 0.045, duration: 0.18, level: velocity * 0.28, pan: pan * 0.14 }, bucket);
+      scheduleDrumOscillator(context, graph.drums, time, { type: "square", startFrequency: 220, endFrequency: 65, pitchDuration: 0.03, duration: 0.075, level: velocity * 0.052, pan: -pan * 0.12, filter: { type: "lowpass", frequency: 1700 } }, bucket);
+      triggerDrumPump(graph, time, 0.58, 0.12);
+    } else if (zone === "mid") {
+      scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.1, level: velocity * 0.16, pan, filter: { type: "bandpass", frequency: 1800, q: 0.9 }, chip: { levels: 8, holdSamples: 6 } }, bucket);
+      scheduleDrumOscillator(context, graph.drums, time, { type: "triangle", startFrequency: 190, endFrequency: 125, pitchDuration: 0.05, duration: 0.09, level: velocity * 0.07, pan: -pan * 0.2 }, bucket);
+    } else {
+      scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.045, level: velocity * 0.105, pan, filter: { type: "highpass", frequency: 6800 }, chip: { levels: 6, holdSamples: 8 } }, bucket);
+      scheduleDrumOscillator(context, graph.drums, time, { type: "square", startFrequency: 4200, duration: 0.025, level: velocity * 0.012, pan: -pan, filter: { type: "lowpass", frequency: 8500 } }, bucket);
+      scheduleDrumOscillator(context, graph.drums, time, { type: "square", startFrequency: 6200, duration: 0.022, level: velocity * 0.008, pan, filter: { type: "lowpass", frequency: 8500 } }, bucket);
+    }
+    return;
+  }
 
+  if (shape.instrument === "glitchDrums") {
+    const jitterPan = clamp(pan + ((seed & 1) ? 0.16 : -0.16), -0.72, 0.72);
+    if (zone === "low") {
+      scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: 145, endFrequency: 44, pitchDuration: 0.035, duration: 0.2, level: velocity * 0.27, pan: pan * 0.14 }, bucket);
+      scheduleDrumOscillator(context, graph.drums, time + 0.075, { type: "sine", startFrequency: 72, endFrequency: 46, pitchDuration: 0.018, duration: 0.025, level: velocity * 0.055, pan: -jitterPan }, bucket);
+      scheduleDrumOscillator(context, graph.drums, time + 0.105, { type: "triangle", startFrequency: 68, endFrequency: 45, pitchDuration: 0.016, duration: 0.025, level: velocity * 0.04, pan: jitterPan }, bucket);
+      scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.018, level: velocity * 0.035, pan: jitterPan, filter: { type: "highpass", frequency: 4200 } }, bucket);
+      triggerDrumPump(graph, time, 0.6, 0.11);
+    } else if (zone === "mid") {
+      [0, 0.024, 0.048, 0.072].forEach((offset, index) => {
+        scheduleDrumNoise(context, graph.drums, time + offset, seed ^ (index * 0x45d9), { duration: 0.013, level: velocity * (0.11 - index * 0.012), pan: index % 2 ? -jitterPan : jitterPan, filter: { type: "bandpass", frequency: 1100 + index * 700, q: 1.1 }, chip: { levels: 12, holdSamples: 4 } }, bucket);
+      });
+      scheduleDrumOscillator(context, graph.drums, time, { type: "triangle", startFrequency: 205, endFrequency: 132, pitchDuration: 0.045, duration: 0.07, level: velocity * 0.055, pan: -pan * 0.2 }, bucket);
+    } else {
+      [0, 0.014, 0.028, 0.042, 0.056].forEach((offset, index) => {
+        scheduleDrumNoise(context, graph.drums, time + offset, seed ^ (index * 0x9e37), { duration: 0.009, level: velocity * (0.06 - index * 0.007), pan: index % 2 ? -jitterPan : jitterPan, filter: { type: "highpass", frequency: 5400 }, chip: { levels: 8, holdSamples: 5 } }, bucket);
+      });
+      scheduleDrumOscillator(context, graph.drums, time, { type: "triangle", startFrequency: 3600, endFrequency: 880, pitchDuration: 0.04, duration: 0.045, level: velocity * 0.017, pan: -jitterPan, filter: { type: "lowpass", frequency: 6200 } }, bucket);
+    }
+    return;
+  }
+
+  if (shape.instrument === "festivalDrums") {
+    if (zone === "low") {
+      scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: 190, endFrequency: 50, pitchDuration: 0.038, duration: 0.27, level: velocity * 0.32, pan: pan * 0.14, filter: { type: "lowpass", frequency: 900 } }, bucket);
+      scheduleDrumOscillator(context, graph.drums, time, { type: "triangle", startFrequency: 90, endFrequency: 48, pitchDuration: 0.075, duration: 0.18, level: velocity * 0.08, pan: -pan * 0.12 }, bucket);
+      scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.013, level: velocity * 0.02, pan, filter: { type: "highpass", frequency: 5500 }, secondFilter: { type: "lowpass", frequency: 8200 } }, bucket);
+      triggerDrumPump(graph, time, 0.48, 0.15);
+    } else if (zone === "mid") {
+      [0, 0.012, 0.025].forEach((offset, index) => {
+        scheduleDrumNoise(context, graph.drums, time + offset, seed ^ (index * 0x85eb), { duration: index === 2 ? 0.16 : 0.05, level: velocity * [0.12, 0.1, 0.07][index], pan: index % 2 ? -pan : pan, filter: { type: "highpass", frequency: 800 }, secondFilter: { type: "lowpass", frequency: 7800 } }, bucket);
+      });
+      scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: 330, endFrequency: 210, pitchDuration: 0.045, duration: 0.08, level: velocity * 0.05, pan: -pan * 0.2 }, bucket);
+    } else {
+      scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.07, level: velocity * 0.08, pan, filter: { type: "highpass", frequency: 7200 }, secondFilter: { type: "lowpass", frequency: 9000 } }, bucket);
+      [1280, 1910, 2865].forEach((frequency, index) => {
+        scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: frequency, duration: [0.3, 0.22, 0.14][index], level: velocity * [0.035, 0.022, 0.01][index], pan: index % 2 ? -pan : pan, filter: { type: "lowpass", frequency: 5200 } }, bucket);
+      });
+    }
+    return;
+  }
+
+  if (zone === "low") {
+    scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: 165, endFrequency: 45, pitchDuration: 0.1, duration: 0.24, level: velocity * 0.72, pan: pan * 0.2 }, bucket);
+    triggerDrumPump(graph, time, 0.48, 0.14);
+    return;
+  }
+
+  const isSnare = zone === "mid";
+  const duration = isSnare ? 0.17 : shape.y > 0.16 ? 0.065 : 0.12;
+  scheduleDrumNoise(context, graph.drums, time, seed, { duration, level: velocity * (isSnare ? 0.42 : 0.23), pan, filter: { type: isSnare ? "bandpass" : "highpass", frequency: isSnare ? 1850 : shape.y > 0.16 ? 7200 : 5100, q: isSnare ? 0.8 : 1.4 } }, bucket);
   if (isSnare) {
-    const body = context.createOscillator();
-    const bodyGain = context.createGain();
-    body.type = "triangle";
-    body.frequency.setValueAtTime(190, time);
-    body.frequency.exponentialRampToValueAtTime(128, time + 0.1);
-    bodyGain.gain.setValueAtTime(velocity * 0.2, time);
-    bodyGain.gain.exponentialRampToValueAtTime(EPSILON, time + 0.12);
-    body.connect(bodyGain);
-    connectWithPan(context, bodyGain, graph.drums, pan * 0.2);
-    body.start(time);
-    body.stop(time + 0.14);
-    registerSource(body, bucket);
+    scheduleDrumOscillator(context, graph.drums, time, { type: "triangle", startFrequency: 190, endFrequency: 128, pitchDuration: 0.1, duration: 0.12, level: velocity * 0.2, pan: pan * 0.2 }, bucket);
   }
 }
 
-function scheduleSequence(
+function scheduleShape(
   context: BaseAudioContext,
   graph: AudioGraph,
-  shapes: SoundShape[],
-  bpm: number,
+  shape: SoundShape,
+  time: number,
+  secondsPerBeat: number,
   scale: ScaleId,
-  startTime: number,
   bucket?: Set<AudioScheduledSourceNode>,
 ) {
-  const secondsPerBeat = 60 / bpm;
-  shapes
-    .slice(0, MAX_SHAPES)
-    .sort((left, right) => left.x - right.x)
-    .forEach((shape) => {
-      const time = startTime + shapeStartBeat(shape) * secondsPerBeat;
-      if (shape.instrument === "drums") {
-        scheduleDrum(context, graph, shape, time, bucket);
-      } else {
-        scheduleTone(
-          context,
-          graph,
-          shape,
-          time,
-          eventDuration(shape) * secondsPerBeat,
-          scale,
-          bucket,
-        );
-      }
-    });
-}
-
-function encodeWav(buffer: AudioBuffer) {
-  const channels = Math.min(2, buffer.numberOfChannels);
-  const frames = buffer.length;
-  const bytesPerSample = 2;
-  const arrayBuffer = new ArrayBuffer(44 + frames * channels * bytesPerSample);
-  const view = new DataView(arrayBuffer);
-  const writeText = (offset: number, value: string) => {
-    for (let index = 0; index < value.length; index += 1) {
-      view.setUint8(offset + index, value.charCodeAt(index));
-    }
-  };
-  writeText(0, "RIFF");
-  view.setUint32(4, 36 + frames * channels * bytesPerSample, true);
-  writeText(8, "WAVE");
-  writeText(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, channels, true);
-  view.setUint32(24, buffer.sampleRate, true);
-  view.setUint32(28, buffer.sampleRate * channels * bytesPerSample, true);
-  view.setUint16(32, channels * bytesPerSample, true);
-  view.setUint16(34, 16, true);
-  writeText(36, "data");
-  view.setUint32(40, frames * channels * bytesPerSample, true);
-
-  let peak = EPSILON;
-  for (let channel = 0; channel < channels; channel += 1) {
-    const data = buffer.getChannelData(channel);
-    for (let index = 0; index < frames; index += 1) {
-      peak = Math.max(peak, Math.abs(data[index]));
-    }
+  if (isDrumInstrument(shape.instrument)) {
+    scheduleDrum(context, graph, shape, time, bucket);
+  } else {
+    scheduleTone(
+      context,
+      graph,
+      shape,
+      time,
+      eventDuration(shape) * secondsPerBeat,
+      scale,
+      bucket,
+    );
   }
-  const normalization = Math.min(1, 0.96 / peak);
-  let offset = 44;
-  for (let frame = 0; frame < frames; frame += 1) {
-    for (let channel = 0; channel < channels; channel += 1) {
-      const sample = clamp(buffer.getChannelData(channel)[frame] * normalization, -1, 1);
-      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-      offset += 2;
-    }
-  }
-  return new Blob([arrayBuffer], { type: "audio/wav" });
 }
 
 function createDemo(): SoundShape[] {
   const result: SoundShape[] = [];
   const add = (
     instrument: InstrumentId,
-    x: number,
+    startStep: number,
     y: number,
-    width: number,
+    durationSteps: number,
     size: number,
+    pan = 0,
     rotation = 0,
-  ) => result.push({ id: makeId(), instrument, x, y, width, size, rotation });
+  ) => result.push({ id: makeId(), instrument, startStep, y, durationSteps, size, pan, rotation });
 
-  [0.015, 0.255, 0.51, 0.765].forEach((x) => add("drums", x, 0.84, 0.025, 0.07));
-  [0.255, 0.765].forEach((x) => add("drums", x, 0.52, 0.025, 0.06));
-  [0.13, 0.37, 0.63, 0.88].forEach((x) => add("drums", x, 0.28, 0.02, 0.038, 0.25));
-  [0.07, 0.2, 0.32, 0.45, 0.57, 0.69, 0.82, 0.94].forEach((x, index) =>
-    add("organ", x, [0.67, 0.62, 0.72, 0.58][index % 4], 0.048, 0.057, index * 0.18),
+  [0, 16, 32, 48].forEach((step) => add("drums", step, 0.84, 1, 0.07));
+  [8, 24, 40, 56].forEach((step) => add("drums", step, 0.52, 1, 0.06));
+  [4, 12, 20, 28, 36, 44, 52, 60].forEach((step) =>
+    add("drums", step, 0.28, 1, 0.038, step % 16 ? 0.38 : -0.38, 0.25),
   );
-  [0.03, 0.16, 0.29, 0.41, 0.54, 0.66, 0.79, 0.91].forEach((x, index) =>
-    add("keys", x, [0.32, 0.22, 0.38, 0.17, 0.29, 0.12, 0.25, 0.2][index], 0.032, 0.052, Math.PI / 4),
+  [0, 7, 16, 23, 32, 39, 48, 55].forEach((step, index) =>
+    add("bass", step, [0.82, 0.76, 0.8, 0.72][index % 4], 2, 0.074, index % 2 ? 0.18 : -0.18),
   );
-  [0.095, 0.345, 0.595, 0.845].forEach((x, index) =>
-    add("brass", x, [0.45, 0.36, 0.48, 0.31][index], 0.075, 0.075, index % 2 ? 0.16 : -0.12),
+  [2, 10, 18, 26, 34, 42, 50, 58].forEach((step, index) =>
+    add("pluck", step, [0.28, 0.18, 0.34, 0.22][index % 4], 1, 0.056, index % 2 ? 0.62 : -0.62, index * 0.2),
   );
-  add("strings", 0.16, 0.57, 0.28, 0.095, -0.08);
-  add("strings", 0.62, 0.49, 0.29, 0.1, 0.08);
+  [0, 16, 32, 48].forEach((step, index) =>
+    add("chord", step, [0.62, 0.56, 0.65, 0.52][index], 12, 0.084, index % 2 ? 0.24 : -0.24),
+  );
+  [0, 32].forEach((step) => add("taiko", step, 0.82, 2, 0.09, -0.22));
+  [16, 48].forEach((step) => add("taiko", step, 0.5, 1, 0.068, 0.22));
+  [6, 14, 22, 30, 38, 46, 54, 62].forEach((step, index) =>
+    add("chipDrums", step, 0.18, 1, 0.047, index % 2 ? 0.46 : -0.46, 0.18),
+  );
+  [15, 31, 47, 63].forEach((step, index) =>
+    add("glitchDrums", step, 0.46, 1, 0.061, index % 2 ? 0.58 : -0.58, -0.26),
+  );
+  [12, 28, 44, 60].forEach((step, index) =>
+    add("festivalDrums", step, 0.12, 1, 0.062, index % 2 ? 0.36 : -0.36, 0.3),
+  );
+  [5, 21, 37, 53].forEach((step, index) =>
+    add("flute", step, [0.2, 0.14, 0.25, 0.17][index], 3, 0.064, index % 2 ? 0.34 : -0.34, 0.1),
+  );
+  [3, 11, 19, 27, 35, 43, 51, 59].forEach((step, index) =>
+    add("organ", step, [0.67, 0.62, 0.72, 0.58][index % 4], 3, 0.057, index % 2 ? 0.34 : -0.34, index * 0.18),
+  );
+  [1, 9, 17, 25, 33, 41, 49, 57].forEach((step, index) =>
+    add("keys", step, [0.32, 0.22, 0.38, 0.17, 0.29, 0.12, 0.25, 0.2][index], 2, 0.052, index % 2 ? 0.55 : -0.55, Math.PI / 4),
+  );
+  [6, 22, 38, 54].forEach((step, index) =>
+    add("brass", step, [0.45, 0.36, 0.48, 0.31][index], 5, 0.075, index % 2 ? 0.5 : -0.5, index % 2 ? 0.16 : -0.12),
+  );
+  add("strings", 8, 0.57, 18, 0.095, -0.22, -0.08);
+  add("strings", 38, 0.49, 20, 0.1, 0.24, 0.08);
   return result;
 }
 
@@ -562,6 +1196,7 @@ function formClass(form: ShapeForm) {
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const shapesRef = useRef<SoundShape[]>([]);
+  const timelineShapesRef = useRef<SoundShape[]>([]);
   const interactionRef = useRef<Interaction | null>(null);
   const gestureSnapshotRef = useRef<SoundShape[] | null>(null);
   const gestureChangedRef = useRef(false);
@@ -571,12 +1206,11 @@ export default function Home() {
   const audioGraphRef = useRef<AudioGraph | null>(null);
   const audioSourcesRef = useRef(new Set<AudioScheduledSourceNode>());
   const schedulerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const finishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationRef = useRef<number | null>(null);
   const playbackTokenRef = useRef(0);
-  const playStartRef = useRef(0);
-  const loopDurationRef = useRef(0);
-  const nextCycleRef = useRef(0);
+  const transportRef = useRef<TransportState | null>(null);
+  const loopRef = useRef(true);
+  const viewStartStepRef = useRef(0);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoredRef = useRef(false);
@@ -593,12 +1227,14 @@ export default function Home() {
   const [volume, setVolume] = useState(0.72);
   const [muted, setMuted] = useState(false);
   const [playing, setPlaying] = useState(false);
-  const [playhead, setPlayhead] = useState(0);
+  const [playheadBeat, setPlayheadBeat] = useState(0);
+  const [viewStartStep, setViewStartStep] = useState(0);
   const [audioReady, setAudioReady] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
   const [toast, setToast] = useState("");
   const [clearArmed, setClearArmed] = useState(false);
-  const [projectTitle, setProjectTitle] = useState("NEON BLOOM_01");
+  const [projectTitle, setProjectTitle] = useState("春日回响 01");
   const [saved, setSaved] = useState(true);
 
   const selectedShape = useMemo(
@@ -608,6 +1244,7 @@ export default function Home() {
 
   const setShapesDirect = useCallback((next: SoundShape[]) => {
     shapesRef.current = next;
+    timelineShapesRef.current = [...next].sort((left, right) => left.startStep - right.startStep);
     setShapes(next);
     setSaved(false);
   }, []);
@@ -622,7 +1259,7 @@ export default function Home() {
       if (next === shapesRef.current) return;
       historyRef.current = [...historyRef.current.slice(-39), shapesRef.current];
       futureRef.current = [];
-      setShapesDirect(next.slice(0, MAX_SHAPES));
+      setShapesDirect(next);
       syncStacks();
     },
     [setShapesDirect, syncStacks],
@@ -670,11 +1307,10 @@ export default function Home() {
   const stopPlayback = useCallback((reset = true) => {
     playbackTokenRef.current += 1;
     if (schedulerRef.current) clearInterval(schedulerRef.current);
-    if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
     schedulerRef.current = null;
-    finishTimerRef.current = null;
     animationRef.current = null;
+    transportRef.current = null;
     const now = audioContextRef.current?.currentTime ?? 0;
     const graph = audioGraphRef.current;
     if (graph) {
@@ -692,7 +1328,13 @@ export default function Home() {
     audioSourcesRef.current.clear();
     audioGraphRef.current = null;
     setPlaying(false);
-    if (reset) setPlayhead(0);
+    if (reset) setPlayheadBeat(0);
+  }, []);
+
+  const navigateToStep = useCallback((step: number) => {
+    const next = Math.max(0, Math.round(step));
+    viewStartStepRef.current = next;
+    setViewStartStep(next);
   }, []);
 
   const play = useCallback(async () => {
@@ -719,45 +1361,99 @@ export default function Home() {
     playbackTokenRef.current = token;
     const graph = createAudioGraph(context, bpm, muted ? 0 : volume);
     audioGraphRef.current = graph;
-    const loopDuration = BAR_BEATS * (60 / bpm);
-    const start = context.currentTime + 0.07;
-    playStartRef.current = start;
-    loopDurationRef.current = loopDuration;
-    nextCycleRef.current = start;
-    const snapshot = shapesRef.current.map((shape) => ({ ...shape }));
-    const scheduleCycle = () => {
-      scheduleSequence(
-        context,
-        graph,
-        snapshot,
-        bpm,
-        scale,
-        nextCycleRef.current,
-        audioSourcesRef.current,
-      );
-      nextCycleRef.current += loopDuration;
+    const secondsPerBeat = 60 / bpm;
+    const duration = projectEndStep(shapesRef.current) / STEPS_PER_BEAT * secondsPerBeat;
+    const origin = context.currentTime + START_DELAY_SECONDS;
+    const events = shapesRef.current
+      .map((shape) => ({
+        shape: { ...shape },
+        offsetSeconds: shapeStartBeat(shape) * secondsPerBeat,
+      }))
+      .sort((left, right) => left.offsetSeconds - right.offsetSeconds);
+    transportRef.current = {
+      token,
+      origin,
+      duration,
+      secondsPerBeat,
+      cycle: 0,
+      eventIndex: 0,
+      events,
     };
-    scheduleCycle();
-    if (loop) {
-      schedulerRef.current = setInterval(() => {
-        if (token !== playbackTokenRef.current) return;
-        while (nextCycleRef.current < context.currentTime + 1.25) scheduleCycle();
-      }, 240);
-    } else {
-      finishTimerRef.current = setTimeout(() => {
-        if (token === playbackTokenRef.current) stopPlayback(false);
-      }, (loopDuration + 0.7) * 1000);
-    }
+
+    const pump = () => {
+      const state = transportRef.current;
+      if (!state || state.token !== playbackTokenRef.current) return;
+      const now = context.currentTime;
+      const horizon = now + LOOKAHEAD_SECONDS;
+      if (loopRef.current && now > state.origin + (state.cycle + 1) * state.duration) {
+        const currentCycle = Math.max(0, Math.floor((now - state.origin) / state.duration));
+        if (currentCycle > state.cycle) {
+          state.cycle = currentCycle;
+          state.eventIndex = 0;
+        }
+      }
+
+      while (true) {
+        const cycleStart = state.origin + state.cycle * state.duration;
+        const cycleEnd = cycleStart + state.duration;
+        const event = state.events[state.eventIndex];
+        if (event) {
+          const eventTime = cycleStart + event.offsetSeconds;
+          if (eventTime >= horizon) break;
+          if (eventTime >= now - LATE_GRACE_SECONDS) {
+            scheduleShape(
+              context,
+              graph,
+              event.shape,
+              Math.max(eventTime, now + 0.003),
+              state.secondsPerBeat,
+              scale,
+              audioSourcesRef.current,
+            );
+          }
+          state.eventIndex += 1;
+          continue;
+        }
+        if (cycleEnd > horizon) break;
+        if (!loopRef.current) break;
+        state.cycle += 1;
+        state.eventIndex = 0;
+      }
+
+      const currentCycleEnd = state.origin + (state.cycle + 1) * state.duration;
+      if (!loopRef.current && now >= currentCycleEnd + effectTailSeconds(bpm)) {
+        stopPlayback(false);
+      }
+    };
+
+    pump();
+    schedulerRef.current = setInterval(pump, SCHEDULER_TICK_MS);
     setPlaying(true);
 
     const animate = () => {
       if (token !== playbackTokenRef.current) return;
-      const elapsed = Math.max(0, context.currentTime - start);
-      setPlayhead(loop ? (elapsed % loopDuration) / loopDuration : Math.min(1, elapsed / loopDuration));
+      const state = transportRef.current;
+      if (!state) return;
+      const elapsed = Math.max(0, context.currentTime - state.origin);
+      const currentCycleEnd = (state.cycle + 1) * state.duration;
+      const timelineSeconds = !loopRef.current && elapsed >= currentCycleEnd
+        ? state.duration
+        : elapsed % state.duration;
+      const nextBeat = timelineSeconds / state.secondsPerBeat;
+      setPlayheadBeat(nextBeat);
+      const nextStep = nextBeat * STEPS_PER_BEAT;
+      if (
+        nextStep < viewStartStepRef.current ||
+        nextStep >= viewStartStepRef.current + VIEW_STEPS
+      ) {
+        const nextView = Math.floor(nextStep / VIEW_STEPS) * VIEW_STEPS;
+        viewStartStepRef.current = nextView;
+        setViewStartStep(nextView);
+      }
       animationRef.current = requestAnimationFrame(animate);
     };
     animationRef.current = requestAnimationFrame(animate);
-  }, [bpm, loop, muted, playing, scale, showToast, stopPlayback, volume]);
+  }, [bpm, muted, playing, scale, showToast, stopPlayback, volume]);
 
   const drawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -777,43 +1473,59 @@ export default function Home() {
     const width = bounds.width;
     const height = bounds.height;
     context.clearRect(0, 0, width, height);
-    context.fillStyle = "#0b0e17";
+    context.fillStyle = "#ffffff";
     context.fillRect(0, 0, width, height);
 
-    for (let step = 0; step <= 64; step += 1) {
-      const x = (step / 64) * width;
-      context.strokeStyle = step % 16 === 0 ? "#39415a" : step % 4 === 0 ? "#242a3c" : "#171c2a";
-      context.lineWidth = step % 16 === 0 ? 1.2 : 1;
-      context.beginPath();
-      context.moveTo(x, 0);
-      context.lineTo(x, height);
-      context.stroke();
-    }
-    for (let line = 0; line <= 12; line += 1) {
-      const y = (line / 12) * height;
-      context.strokeStyle = line % 3 === 0 ? "#242a3c" : "#171c2a";
-      context.lineWidth = 1;
-      context.beginPath();
-      context.moveTo(0, y);
-      context.lineTo(width, y);
-      context.stroke();
+    context.fillStyle = "#e8e8ef";
+    const visibleStart = viewStartStep;
+    const visibleEnd = visibleStart + VIEW_STEPS;
+    for (let step = Math.ceil(visibleStart); step <= visibleEnd; step += 1) {
+      const x = ((step - visibleStart) / VIEW_STEPS) * width;
+      for (let line = 0; line <= 12; line += 1) {
+        const y = (line / 12) * height;
+        context.beginPath();
+        context.arc(x, y, step % STEPS_PER_BEAT === 0 ? 1 : 0.65, 0, Math.PI * 2);
+        context.fill();
+      }
+      if (step % STEPS_PER_BAR === 0) {
+        context.strokeStyle = "#d7d7e1";
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(x, 0);
+        context.lineTo(x, height);
+        context.stroke();
+      }
     }
 
-    shapesRef.current.forEach((shape) => {
+    const timeline = timelineShapesRef.current;
+    let low = 0;
+    let high = timeline.length;
+    const earliestRelevantStart = Math.max(0, visibleStart - MAX_NOTE_STEPS);
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (timeline[middle].startStep < earliestRelevantStart) low = middle + 1;
+      else high = middle;
+    }
+    for (let index = low; index < timeline.length; index += 1) {
+      const shape = timeline[index];
+      if (shape.startStep > visibleEnd) break;
+      const shapeEnd = shape.startStep + shape.durationSteps;
+      if (shapeEnd < visibleStart) continue;
       const config = getInstrument(shape.instrument);
-      const x = shape.x * width;
+      const x = ((shape.startStep + shape.durationSteps / 2 - visibleStart) / VIEW_STEPS) * width;
       const y = shape.y * height;
-      const shapeWidth = Math.max(18, shape.width * width);
+      const shapeWidth = Math.max(12, (shape.durationSteps / VIEW_STEPS) * width);
       const shapeHeight = Math.max(14, shape.size * height);
       const selected = shape.id === selectedId;
       context.save();
       context.translate(x, y);
       context.rotate(shape.rotation);
-      context.shadowColor = config.color;
-      context.shadowBlur = selected ? 22 : 8;
+      context.shadowColor = "rgba(24, 24, 30, 0.18)";
+      context.shadowBlur = selected ? 12 : 0;
+      context.shadowOffsetY = selected ? 4 : 0;
       context.strokeStyle = config.color;
-      context.fillStyle = `${config.color}${selected ? "dd" : "a8"}`;
-      context.lineWidth = selected ? 3 : 1.5;
+      context.fillStyle = config.color;
+      context.lineWidth = Math.max(7, shapeHeight * 0.3);
       context.beginPath();
       if (config.form === "triangle") {
         context.moveTo(-shapeWidth / 2, shapeHeight / 2);
@@ -821,11 +1533,8 @@ export default function Home() {
         context.lineTo(shapeWidth / 2, shapeHeight / 2);
         context.closePath();
         context.fill();
-        context.stroke();
       } else if (config.form === "ring") {
         context.ellipse(0, 0, shapeWidth / 2, shapeHeight / 2, 0, 0, Math.PI * 2);
-        context.stroke();
-        context.globalAlpha = 0.22;
         context.fill();
       } else if (config.form === "diamond") {
         context.moveTo(0, -shapeHeight / 2);
@@ -834,29 +1543,84 @@ export default function Home() {
         context.lineTo(-shapeWidth / 2, 0);
         context.closePath();
         context.fill();
-        context.stroke();
       } else if (config.form === "block") {
         context.rect(-shapeWidth / 2, -shapeHeight / 2, shapeWidth, shapeHeight);
         context.fill();
-        context.stroke();
-        context.fillStyle = "#0b0e17";
+        context.fillStyle = "#ffffff";
         context.fillRect(-shapeWidth * 0.12, -shapeHeight / 2, shapeWidth * 0.24, shapeHeight);
-      } else {
+      } else if (config.form === "wave") {
         context.moveTo(-shapeWidth / 2, 0);
         context.bezierCurveTo(-shapeWidth / 4, -shapeHeight, shapeWidth / 4, shapeHeight, shapeWidth / 2, 0);
-        context.lineWidth = Math.max(4, shapeHeight * 0.28);
+        context.lineCap = "round";
         context.stroke();
+      } else if (config.form === "spark") {
+        for (let point = 0; point < 16; point += 1) {
+          const angle = -Math.PI / 2 + point * Math.PI / 8;
+          const radius = point % 2 === 0 ? 1 : 0.38;
+          const px = Math.cos(angle) * shapeWidth / 2 * radius;
+          const py = Math.sin(angle) * shapeHeight / 2 * radius;
+          if (point === 0) context.moveTo(px, py);
+          else context.lineTo(px, py);
+        }
+        context.closePath();
+        context.fill();
+      } else if (config.form === "capsule") {
+        context.roundRect(
+          -shapeWidth / 2,
+          -shapeHeight / 2,
+          shapeWidth,
+          shapeHeight,
+          Math.min(shapeHeight / 2, 18),
+        );
+        context.fill();
+        context.fillStyle = "#ffffff";
+        context.beginPath();
+        context.arc(-shapeWidth * 0.27, 0, Math.max(2.5, shapeHeight * 0.11), 0, Math.PI * 2);
+        context.fill();
+      } else if (config.form === "petal") {
+        context.ellipse(-shapeWidth * 0.18, 0, shapeWidth * 0.27, shapeHeight * 0.25, -0.45, 0, Math.PI * 2);
+        context.ellipse(shapeWidth * 0.18, 0, shapeWidth * 0.27, shapeHeight * 0.25, 0.45, 0, Math.PI * 2);
+        context.ellipse(0, -shapeHeight * 0.18, shapeWidth * 0.18, shapeHeight * 0.28, 0, 0, Math.PI * 2);
+        context.ellipse(0, shapeHeight * 0.18, shapeWidth * 0.18, shapeHeight * 0.28, 0, 0, Math.PI * 2);
+        context.fill();
+      } else if (config.form === "slash") {
+        context.moveTo(-shapeWidth * 0.42, shapeHeight / 2);
+        context.lineTo(-shapeWidth / 2, shapeHeight * 0.12);
+        context.lineTo(shapeWidth * 0.42, -shapeHeight / 2);
+        context.lineTo(shapeWidth / 2, -shapeHeight * 0.12);
+        context.closePath();
+        context.fill();
+      } else {
+        context.moveTo(0, -shapeHeight / 2);
+        context.bezierCurveTo(
+          shapeWidth * 0.42,
+          -shapeHeight * 0.08,
+          shapeWidth * 0.32,
+          shapeHeight * 0.48,
+          0,
+          shapeHeight / 2,
+        );
+        context.bezierCurveTo(
+          -shapeWidth * 0.32,
+          shapeHeight * 0.48,
+          -shapeWidth * 0.42,
+          -shapeHeight * 0.08,
+          0,
+          -shapeHeight / 2,
+        );
+        context.fill();
       }
       if (selected) {
         context.shadowBlur = 0;
-        context.strokeStyle = "#ffffff";
-        context.setLineDash([5, 4]);
-        context.lineWidth = 1;
-        context.strokeRect(-shapeWidth / 2 - 7, -shapeHeight / 2 - 7, shapeWidth + 14, shapeHeight + 14);
+        context.shadowOffsetY = 0;
+        context.fillStyle = "#19191f";
+        context.beginPath();
+        context.arc(shapeWidth / 2 + 6, -shapeHeight / 2 - 6, 4.5, 0, Math.PI * 2);
+        context.fill();
       }
       context.restore();
-    });
-  }, [selectedId]);
+    }
+  }, [selectedId, viewStartStep]);
 
   useEffect(() => {
     drawCanvas();
@@ -867,40 +1631,42 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
-    queueMicrotask(() => {
+    queueMicrotask(async () => {
       if (!active) return;
       try {
         const encoded = window.location.hash.startsWith("#s=") ? window.location.hash.slice(3) : "";
-        const stored = localStorage.getItem("synesthesia-canvas-project");
         const padded = encoded
           ? `${encoded.replace(/-/g, "+").replace(/_/g, "/")}${"=".repeat((4 - (encoded.length % 4)) % 4)}`
           : "";
-        const source = encoded
-          ? new TextDecoder().decode(
-              Uint8Array.from(atob(padded), (char) => char.charCodeAt(0)),
-            )
-          : stored;
-        if (source) {
-          const project = JSON.parse(source) as {
-            shapes?: SoundShape[];
-            bpm?: number;
-            scale?: ScaleId;
-            title?: string;
-          };
-          if (Array.isArray(project.shapes)) {
-            const safeShapes = project.shapes.slice(0, MAX_SHAPES);
-            shapesRef.current = safeShapes;
-            setShapes(safeShapes);
-          }
+        const project = encoded
+          ? JSON.parse(
+              new TextDecoder().decode(
+                Uint8Array.from(atob(padded), (char) => char.charCodeAt(0)),
+              ),
+            ) as Partial<StoredProject>
+          : await loadStoredProject();
+        if (project?.version === 2 && Array.isArray(project.shapes)) {
+          const safeShapes = project.shapes
+            .map(normalizeShape)
+            .filter((shape): shape is SoundShape => Boolean(shape));
+          shapesRef.current = safeShapes;
+          timelineShapesRef.current = [...safeShapes].sort(
+            (left, right) => left.startStep - right.startStep,
+          );
+          setShapes(safeShapes);
           if (typeof project.bpm === "number") setBpm(clamp(project.bpm, 90, 180));
-          if (project.scale && project.scale in SCALES) setScale(project.scale);
+          if (isScaleId(project.scale)) setScale(project.scale);
           if (typeof project.title === "string") setProjectTitle(project.title.slice(0, 36));
           if (encoded) showToast("共享作品已载入，可以直接 Remix");
+        } else if (project) {
+          showToast("已启用新版无限画布；旧练习稿未迁移");
         }
+        localStorage.removeItem("synesthesia-canvas-project");
       } catch {
         showToast("作品链接无法解析，已打开空白画布");
       }
       restoredRef.current = true;
+      setSaved(true);
     });
     return () => {
       active = false;
@@ -910,14 +1676,16 @@ export default function Home() {
   useEffect(() => {
     if (!restoredRef.current) return;
     const timer = setTimeout(() => {
-      localStorage.setItem(
-        "synesthesia-canvas-project",
-        JSON.stringify({ version: 1, shapes, bpm, scale, title: projectTitle }),
-      );
-      setSaved(true);
+      void saveStoredProject({ version: 2, shapes, bpm, scale, title: projectTitle })
+        .then(() => setSaved(true))
+        .catch(() => showToast("本机存储空间不足，但当前画布仍可继续创作"));
     }, 420);
     return () => clearTimeout(timer);
-  }, [bpm, projectTitle, scale, shapes]);
+  }, [bpm, projectTitle, scale, shapes, showToast]);
+
+  useEffect(() => {
+    loopRef.current = loop;
+  }, [loop]);
 
   useEffect(() => {
     if (audioGraphRef.current) {
@@ -929,7 +1697,6 @@ export default function Home() {
   useEffect(
     () => () => {
       if (schedulerRef.current) clearInterval(schedulerRef.current);
-      if (finishTimerRef.current) clearTimeout(finishTimerRef.current);
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
       audioSourcesRef.current.forEach((source) => {
         try {
@@ -945,35 +1712,53 @@ export default function Home() {
 
   const pointFromEvent = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect();
+    const screenX = clamp((event.clientX - bounds.left) / bounds.width);
     return {
-      x: clamp((event.clientX - bounds.left) / bounds.width),
+      screenX,
+      step: Math.max(0, Math.round(viewStartStepRef.current + screenX * VIEW_STEPS)),
       y: clamp((event.clientY - bounds.top) / bounds.height),
     };
   };
 
-  const findShapeAt = (x: number, y: number) =>
-    [...shapesRef.current].reverse().find((shape) => {
-      const width = Math.max(0.035, shape.width) * 0.7;
-      const height = Math.max(0.04, shape.size) * 0.8;
-      return Math.abs(shape.x - x) <= width && Math.abs(shape.y - y) <= height;
-    });
-
-  const addDrawShape = (x: number, y: number) => {
-    if (shapesRef.current.length >= MAX_SHAPES) {
-      showToast(`当前上限为 ${MAX_SHAPES} 个声音事件`);
-      return;
+  const findShapeAt = (step: number, y: number) => {
+    const timeline = timelineShapesRef.current;
+    let low = 0;
+    let high = timeline.length;
+    const earliestStart = Math.max(0, step - MAX_NOTE_STEPS - 1);
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (timeline[middle].startStep < earliestStart) low = middle + 1;
+      else high = middle;
     }
+    const candidates: SoundShape[] = [];
+    for (let index = low; index < timeline.length; index += 1) {
+      const shape = timeline[index];
+      if (shape.startStep > step + 1) break;
+      const height = Math.max(0.04, shape.size) * 0.8;
+      if (
+        step >= shape.startStep - 1 &&
+        step <= shape.startStep + shape.durationSteps + 1 &&
+        Math.abs(shape.y - y) <= height
+      ) {
+        candidates.push(shape);
+      }
+    }
+    return candidates.at(-1);
+  };
+
+  const addDrawShape = (step: number, y: number) => {
     const config = getInstrument(instrument);
     const next = [
       ...shapesRef.current,
       {
         id: makeId(),
-        x,
+        startStep: Math.max(0, step),
         y,
-        width: instrument === "strings" ? 0.065 : 0.027,
+        durationSteps: defaultDurationSteps(instrument),
         size: config.defaultSize * 0.8,
+        pan: 0,
         instrument,
-        rotation: (x * 9 + y * 7) % 0.5 - 0.25,
+        rotation: (step * 0.19 + y * 7) % 0.5 - 0.25,
       },
     ];
     setShapesDirect(next);
@@ -983,8 +1768,17 @@ export default function Home() {
   const onCanvasPointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const point = pointFromEvent(event);
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (tool === "pan") {
+      interactionRef.current = {
+        kind: "pan",
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startViewStep: viewStartStepRef.current,
+      };
+      return;
+    }
     if (tool === "select") {
-      const hit = findShapeAt(point.x, point.y);
+      const hit = findShapeAt(point.step, point.y);
       setSelectedId(hit?.id ?? null);
       if (hit) {
         gestureSnapshotRef.current = shapesRef.current;
@@ -992,7 +1786,7 @@ export default function Home() {
           kind: "move",
           pointerId: event.pointerId,
           id: hit.id,
-          offsetX: point.x - hit.x,
+          offsetStep: point.step - hit.startStep,
           offsetY: point.y - hit.y,
         };
       }
@@ -1000,38 +1794,35 @@ export default function Home() {
     }
     gestureSnapshotRef.current = shapesRef.current;
     if (tool === "draw") {
-      interactionRef.current = { kind: "draw", pointerId: event.pointerId, lastX: point.x, lastY: point.y };
-      addDrawShape(point.x, point.y);
+      interactionRef.current = { kind: "draw", pointerId: event.pointerId, lastStep: point.step, lastY: point.y };
+      addDrawShape(point.step, point.y);
     } else if (tool === "erase") {
-      interactionRef.current = { kind: "erase", pointerId: event.pointerId, lastX: point.x, lastY: point.y };
-      const hit = findShapeAt(point.x, point.y);
+      interactionRef.current = { kind: "erase", pointerId: event.pointerId, lastStep: point.step, lastY: point.y };
+      const hit = findShapeAt(point.step, point.y);
       if (hit) {
         setShapesDirect(shapesRef.current.filter((shape) => shape.id !== hit.id));
         if (selectedId === hit.id) setSelectedId(null);
         gestureChangedRef.current = true;
       }
     } else {
-      if (shapesRef.current.length >= MAX_SHAPES) {
-        showToast(`当前上限为 ${MAX_SHAPES} 个声音事件`);
-        return;
-      }
       const config = getInstrument(instrument);
       const id = makeId();
       interactionRef.current = {
         kind: "stamp",
         pointerId: event.pointerId,
         id,
-        startX: point.x,
+        startStep: point.step,
         startY: point.y,
       };
       setShapesDirect([
         ...shapesRef.current,
         {
           id,
-          x: point.x,
+          startStep: point.step,
           y: point.y,
-          width: instrument === "strings" ? 0.13 : 0.06,
+          durationSteps: defaultDurationSteps(instrument, true),
           size: config.defaultSize,
+          pan: 0,
           instrument,
           rotation: instrument === "keys" ? Math.PI / 4 : 0,
         },
@@ -1045,37 +1836,44 @@ export default function Home() {
     const interaction = interactionRef.current;
     if (!interaction || interaction.pointerId !== event.pointerId) return;
     const point = pointFromEvent(event);
-    if (interaction.kind === "move") {
+    if (interaction.kind === "pan") {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const deltaSteps = (event.clientX - interaction.startClientX) / bounds.width * VIEW_STEPS;
+      navigateToStep(interaction.startViewStep - deltaSteps);
+    } else if (interaction.kind === "move") {
       setShapesDirect(
         shapesRef.current.map((shape) =>
           shape.id === interaction.id
-            ? { ...shape, x: clamp(point.x - interaction.offsetX), y: clamp(point.y - interaction.offsetY) }
+            ? {
+                ...shape,
+                startStep: Math.max(0, point.step - interaction.offsetStep),
+                y: clamp(point.y - interaction.offsetY),
+              }
             : shape,
         ),
       );
       gestureChangedRef.current = true;
     } else if (interaction.kind === "draw") {
-      const distance = Math.hypot(point.x - interaction.lastX, point.y - interaction.lastY);
-      if (distance > 0.027) {
-        addDrawShape(point.x, point.y);
-        interactionRef.current = { ...interaction, lastX: point.x, lastY: point.y };
+      if (Math.abs(point.step - interaction.lastStep) >= 1 || Math.abs(point.y - interaction.lastY) > 0.035) {
+        addDrawShape(point.step, point.y);
+        interactionRef.current = { ...interaction, lastStep: point.step, lastY: point.y };
       }
     } else if (interaction.kind === "erase") {
-      const hit = findShapeAt(point.x, point.y);
+      const hit = findShapeAt(point.step, point.y);
       if (hit) {
         setShapesDirect(shapesRef.current.filter((shape) => shape.id !== hit.id));
         gestureChangedRef.current = true;
       }
-      interactionRef.current = { ...interaction, lastX: point.x, lastY: point.y };
+      interactionRef.current = { ...interaction, lastStep: point.step, lastY: point.y };
     } else {
-      const left = Math.min(interaction.startX, point.x);
-      const right = Math.max(interaction.startX, point.x);
-      const width = clamp(right - left, 0.025, 0.34);
+      const left = Math.min(interaction.startStep, point.step);
+      const right = Math.max(interaction.startStep, point.step);
+      const durationSteps = clamp(right - left + 1, 1, MAX_NOTE_STEPS);
       const size = clamp(0.05 + Math.abs(point.y - interaction.startY) * 0.6, 0.04, 0.18);
       setShapesDirect(
         shapesRef.current.map((shape) =>
           shape.id === interaction.id
-            ? { ...shape, x: left + width / 2, width, size }
+            ? { ...shape, startStep: left, durationSteps, size }
             : shape,
         ),
       );
@@ -1085,6 +1883,14 @@ export default function Home() {
   const onCanvasPointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (interactionRef.current?.pointerId !== event.pointerId) return;
     finishGesture();
+  };
+
+  const onCanvasWheel = (event: ReactWheelEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    const direction = Math.sign(delta);
+    const distance = Math.max(1, Math.round(Math.abs(delta) / 18));
+    navigateToStep(viewStartStepRef.current + direction * distance);
   };
 
   const updateSelected = (patch: Partial<SoundShape>) => {
@@ -1123,6 +1929,7 @@ export default function Home() {
     setSelectedId(null);
     setBpm(132);
     setScale("hirajoshi");
+    navigateToStep(0);
     showToast("已载入 4 小节 Complextro 示例");
   };
 
@@ -1133,22 +1940,27 @@ export default function Home() {
     }
     const next = shapesRef.current.map((shape, index) => {
       const variant = hashString(`${shape.id}-${historyRef.current.length}`) % 7;
-      if (shape.instrument === "drums") return shape;
-      const xShift = variant % 2 ? 1 / 64 : -1 / 64;
+      if (isDrumInstrument(shape.instrument)) return shape;
+      const stepShift = variant % 2 ? 1 : -1;
       const yShift = ((variant % 3) - 1) * 0.055;
       return {
         ...shape,
-        x: clamp(shape.x + xShift),
+        startStep: Math.max(0, shape.startStep + stepShift),
         y: clamp(shape.y + yShift),
+        pan: clamp(shape.pan + (variant % 2 ? 0.12 : -0.12), -1, 1),
         rotation: shape.rotation + (index % 2 ? 0.12 : -0.08),
       };
     });
     commitShapes(next);
-    showToast("MUTATION 完成：保留节奏，重组旋律走向");
+    showToast("变奏完成：保留节奏，重新编排了旋律走向");
   };
 
   const shareProject = async () => {
-    const payload = JSON.stringify({ version: 1, shapes: shapesRef.current, bpm, scale, title: projectTitle });
+    const payload = JSON.stringify({ version: 2, shapes: shapesRef.current, bpm, scale, title: projectTitle });
+    if (payload.length > 900_000) {
+      showToast("大型作品已完整保存在本机；当前作品过大，不适合放进分享链接");
+      return;
+    }
     const bytes = new TextEncoder().encode(payload);
     let binary = "";
     bytes.forEach((byte) => (binary += String.fromCharCode(byte)));
@@ -1169,27 +1981,102 @@ export default function Home() {
       return;
     }
     setExporting(true);
-    showToast("正在离线渲染 44.1 kHz WAV…");
+    setExportProgress(0);
+    showToast("正在分段渲染 44.1 kHz WAV…");
+    let writable: WavWritableStream | null = null;
     try {
       const sampleRate = 44100;
-      const loopSeconds = BAR_BEATS * (60 / bpm);
-      const offline = new OfflineAudioContext(2, Math.ceil((loopSeconds + 1.4) * sampleRate), sampleRate);
-      const graph = createAudioGraph(offline, bpm, 0.78);
-      scheduleSequence(offline, graph, shapesRef.current, bpm, scale, 0.04);
-      const rendered = await offline.startRendering();
-      const blob = encodeWav(rendered);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
+      const channels = 2;
+      const secondsPerBeat = 60 / bpm;
+      const musicalSeconds = projectEndStep(shapesRef.current) / STEPS_PER_BEAT * secondsPerBeat;
+      const tailSeconds = effectTailSeconds(bpm);
+      const renderSeconds = musicalSeconds + tailSeconds;
+      const totalFrames = Math.ceil(renderSeconds * sampleRate);
+      const coreFrames = sampleRate * 20;
+      const preRollFrames = Math.ceil(
+        (MAX_NOTE_STEPS / STEPS_PER_BEAT * secondsPerBeat + tailSeconds) * sampleRate,
+      );
+      const padFrames = Math.ceil(sampleRate * 0.02);
+      const prepared = shapesRef.current
+        .map((shape) => ({ shape: { ...shape }, startSeconds: shapeStartBeat(shape) * secondsPerBeat }))
+        .sort((left, right) => left.startSeconds - right.startSeconds);
       const safeTitle = projectTitle.replace(/[^\w\u4e00-\u9fa5-]+/g, "-").replace(/-+/g, "-");
-      anchor.href = url;
-      anchor.download = `${safeTitle || "synesthesia-canvas"}-${bpm}bpm.wav`;
-      anchor.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      showToast("WAV 已完成并开始下载");
-    } catch {
-      showToast("渲染失败；作品仍已安全保存在此设备");
+      const fileName = `${safeTitle || "synesthesia-canvas"}-${bpm}bpm.wav`;
+      writable = await suggestWavFile(fileName);
+      const parts: BlobPart[] = [];
+      const header = createWavHeader(totalFrames, sampleRate, channels);
+      if (writable) await writable.write(header);
+      else parts.push(header.slice().buffer as ArrayBuffer);
+
+      const lowerBound = (seconds: number) => {
+        let low = 0;
+        let high = prepared.length;
+        while (low < high) {
+          const middle = (low + high) >>> 1;
+          if (prepared[middle].startSeconds < seconds) low = middle + 1;
+          else high = middle;
+        }
+        return low;
+      };
+
+      for (let coreStart = 0; coreStart < totalFrames; coreStart += coreFrames) {
+        const coreEnd = Math.min(totalFrames, coreStart + coreFrames);
+        const currentCoreFrames = coreEnd - coreStart;
+        const renderStart = Math.max(0, coreStart - preRollFrames);
+        const renderStartSeconds = renderStart / sampleRate;
+        const renderEndSeconds = coreEnd / sampleRate;
+        const offlineLength = coreEnd - renderStart + padFrames;
+        const offline = new OfflineAudioContext(channels, offlineLength, sampleRate);
+        const graph = createAudioGraph(offline, bpm, 0.78);
+        let eventIndex = lowerBound(renderStartSeconds);
+        while (
+          eventIndex < prepared.length &&
+          prepared[eventIndex].startSeconds < renderEndSeconds
+        ) {
+          const event = prepared[eventIndex];
+          scheduleShape(
+            offline,
+            graph,
+            event.shape,
+            padFrames / sampleRate + event.startSeconds - renderStartSeconds,
+            secondsPerBeat,
+            scale,
+          );
+          eventIndex += 1;
+        }
+        const rendered = await offline.startRendering();
+        const fromFrame = coreStart - renderStart + padFrames;
+        const pcm = encodePcm16(rendered, fromFrame, currentCoreFrames, channels);
+        if (writable) await writable.write(pcm);
+        else parts.push(pcm.slice().buffer as ArrayBuffer);
+        setExportProgress(coreEnd / totalFrames);
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+
+      if (writable) {
+        await writable.close();
+        writable = null;
+        showToast("WAV 已直接写入所选位置");
+      } else {
+        const blob = new Blob(parts, { type: "audio/wav" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = fileName;
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showToast("WAV 已完成并开始下载");
+      }
+    } catch (error) {
+      if (writable) await writable.abort(error).catch(() => undefined);
+      if (error instanceof DOMException && error.name === "AbortError") {
+        showToast("已取消导出");
+      } else {
+        showToast("渲染失败；作品仍已安全保存在此设备");
+      }
     } finally {
       setExporting(false);
+      setExportProgress(0);
     }
   };
 
@@ -1210,6 +2097,7 @@ export default function Home() {
       else if (event.key.toLowerCase() === "b") setTool("draw");
       else if (event.key.toLowerCase() === "s") setTool("stamp");
       else if (event.key.toLowerCase() === "e") setTool("erase");
+      else if (event.key.toLowerCase() === "h") setTool("pan");
       else if (event.key === "Delete" || event.key === "Backspace") deleteSelected();
     };
     window.addEventListener("keydown", onKeyDown);
@@ -1226,26 +2114,52 @@ export default function Home() {
       ) as Record<InstrumentId, number>,
     [shapes],
   );
+  const eventPreview = useMemo(
+    () => [...shapes].sort((left, right) => left.startStep - right.startStep).slice(0, 100),
+    [shapes],
+  );
 
-  const totalDuration = BAR_BEATS * (60 / bpm);
-  const currentBeat = Math.min(15.99, playhead * 16);
-  const bar = Math.floor(currentBeat / 4) + 1;
-  const beat = Math.floor(currentBeat % 4) + 1;
-  const sixteenth = Math.floor((currentBeat % 1) * 4) + 1;
+  const totalSteps = projectEndStep(shapes);
+  const totalBeats = totalSteps / STEPS_PER_BEAT;
+  const totalBars = totalSteps / STEPS_PER_BAR;
+  const totalDuration = totalBeats * (60 / bpm);
+  const displayBeat = Math.min(Math.max(0, playheadBeat), Math.max(0, totalBeats - EPSILON));
+  const bar = Math.floor(displayBeat / BEATS_PER_BAR) + 1;
+  const beat = Math.floor(displayBeat % BEATS_PER_BAR) + 1;
+  const sixteenth = Math.floor((displayBeat % 1) * STEPS_PER_BEAT) + 1;
+  const playheadStep = playheadBeat * STEPS_PER_BEAT;
+  const playheadVisible =
+    playing && playheadStep >= viewStartStep && playheadStep <= viewStartStep + VIEW_STEPS;
+  const playheadLeft = (playheadStep - viewStartStep) / VIEW_STEPS * 100;
+  const visibleBarMarkers: { step: number; bar: number; left: number }[] = [];
+  const firstVisibleBarStep = Math.ceil(viewStartStep / STEPS_PER_BAR) * STEPS_PER_BAR;
+  for (
+    let step = firstVisibleBarStep;
+    step <= viewStartStep + VIEW_STEPS;
+    step += STEPS_PER_BAR
+  ) {
+    visibleBarMarkers.push({
+      step,
+      bar: step / STEPS_PER_BAR + 1,
+      left: (step - viewStartStep) / VIEW_STEPS * 100,
+    });
+  }
+  const firstVisibleBar = Math.floor(viewStartStep / STEPS_PER_BAR) + 1;
+  const lastVisibleBar = Math.floor((viewStartStep + VIEW_STEPS - 1) / STEPS_PER_BAR) + 1;
 
   return (
     <main className="app-shell">
       <header className="topbar">
         <div className="brand-block">
-          <span className="brand-mark" aria-hidden="true">SC</span>
+          <span className="brand-mark" aria-hidden="true">♪</span>
           <div>
-            <p className="eyebrow">SYNESTHESIA / AUDIOVISUAL LAB</p>
-            <h1>通感画布 <span>CANVAS_01</span></h1>
+            <h1>通感画布</h1>
+            <p className="brand-subtitle">把颜色画成音乐</p>
           </div>
         </div>
 
         <label className="project-name">
-          <span>PROJECT</span>
+          <span>作品名称</span>
           <input
             value={projectTitle}
             maxLength={36}
@@ -1259,30 +2173,47 @@ export default function Home() {
 
         <div className="top-settings" aria-label="工程设置">
           <label>
-            <span>BPM</span>
+            <span>速度</span>
             <input
               type="number"
               min="90"
               max="180"
               value={bpm}
-              onChange={(event) => setBpm(clamp(Number(event.target.value) || 132, 90, 180))}
+              onChange={(event) => {
+                setBpm(clamp(Number(event.target.value) || 132, 90, 180));
+                setSaved(false);
+              }}
             />
           </label>
           <label>
-            <span>SCALE</span>
-            <select value={scale} onChange={(event) => setScale(event.target.value as ScaleId)}>
-              {Object.entries(SCALES).map(([id, item]) => (
-                <option key={id} value={id}>{item.name}</option>
+            <span>音阶 · {SCALE_ENTRIES.length} 种</span>
+            <select
+              value={scale}
+              onChange={(event) => {
+                const nextScale = event.target.value;
+                if (!isScaleId(nextScale)) return;
+                if (playing) stopPlayback();
+                setScale(nextScale);
+                setSaved(false);
+                showToast(`已切换到 ${SCALES[nextScale].name}`);
+              }}
+            >
+              {SCALE_GROUPS.map((group) => (
+                <optgroup key={group} label={group}>
+                  {SCALE_ENTRIES.filter(([, item]) => item.group === group).map(([id, item]) => (
+                    <option key={id} value={id}>{item.name}</option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </label>
-          <div className="quantize-readout"><span>GRID</span><strong>1/16 · 4 BAR</strong></div>
+          <div className="quantize-readout"><span>节拍网格</span><strong>1/16 · 无限延展</strong></div>
         </div>
 
         <div className="header-actions">
-          <span className={`save-state ${saved ? "is-saved" : ""}`}>{saved ? "● 本地已保存" : "○ 保存中"}</span>
+          <span className={`save-state ${saved ? "is-saved" : ""}`}>{saved ? "已保存" : "保存中…"}</span>
           <button type="button" className="button button--quiet" onClick={() => void shareProject()}>
-            ↗ 分享
+            分享
           </button>
           <button
             type="button"
@@ -1290,86 +2221,129 @@ export default function Home() {
             onClick={() => void exportWav()}
             disabled={exporting}
           >
-            {exporting ? "渲染中…" : "⇩ 导出 WAV"}
+            {exporting ? "正在生成…" : "导出 WAV"}
           </button>
         </div>
       </header>
 
       <section className="workspace">
         <aside className="tool-rail" aria-label="声音画笔与绘图工具">
-          <div className="rail-heading">
-            <span>VOICE BRUSH</span>
-            <strong>{String(shapes.length).padStart(2, "0")}/{MAX_SHAPES}</strong>
-          </div>
-          <div className="instrument-list">
-            {INSTRUMENTS.map((item) => (
-              <button
-                type="button"
-                key={item.id}
-                className={`instrument-button ${instrument === item.id ? "is-active" : ""}`}
-                style={{ "--instrument-color": item.color } as CSSProperties}
-                aria-pressed={instrument === item.id}
-                onClick={() => {
-                  setInstrument(item.id);
-                  if (tool === "select" || tool === "erase") setTool("draw");
-                }}
-              >
-                <span className="instrument-code">{item.code}</span>
-                <span className={formClass(item.form)} aria-hidden="true" />
-                <span className="instrument-copy"><strong>{item.name}</strong><small>{item.subtitle}</small></span>
-                <span className="instrument-count">{instrumentCounts[item.id]}</span>
-              </button>
-            ))}
-          </div>
+          <section className="rail-section rail-section--voices" aria-label="声音画笔列表">
+            <header className="rail-heading">
+              <span>声音画笔</span>
+              <strong>{INSTRUMENTS.length} 种 · {shapes.length} 个声音</strong>
+            </header>
+            <div className="instrument-scroll">
+              <div className="instrument-list">
+                {INSTRUMENTS.map((item) => (
+                  <button
+                    type="button"
+                    key={item.id}
+                    className={`instrument-button ${instrument === item.id ? "is-active" : ""}`}
+                    style={{
+                      "--instrument-color": item.color,
+                      "--instrument-accent": item.accent,
+                    } as CSSProperties}
+                    aria-pressed={instrument === item.id}
+                    onClick={() => {
+                      setInstrument(item.id);
+                      if (tool === "select" || tool === "erase" || tool === "pan") setTool("draw");
+                    }}
+                  >
+                    <span className="instrument-code">{item.code}</span>
+                    <span className={formClass(item.form)} aria-hidden="true" />
+                    <span className="instrument-copy"><strong>{item.name}</strong><small>{item.subtitle}</small></span>
+                    <span className="instrument-count">{instrumentCounts[item.id]}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
 
-          <div className="rail-divider"><span>EDIT MODE</span></div>
-          <div className="tool-grid">
-            {TOOL_ITEMS.map((item) => (
-              <button
-                type="button"
-                key={item.id}
-                className={`tool-button ${tool === item.id ? "is-active" : ""}`}
-                aria-pressed={tool === item.id}
-                title={`${item.label} (${item.key})`}
-                onClick={() => setTool(item.id)}
-              >
-                <span aria-hidden="true">{item.glyph}</span>
-                <strong>{item.label}</strong>
-                <kbd>{item.key}</kbd>
-              </button>
-            ))}
-          </div>
-          <div className="history-actions">
-            <button type="button" onClick={undo} disabled={!historyCount}>↶ 撤销</button>
-            <button type="button" onClick={redo} disabled={!futureCount}>↷ 重做</button>
-            <button
-              type="button"
-              className={clearArmed ? "is-danger" : ""}
-              onClick={clearCanvas}
-              disabled={!shapes.length}
-            >
-              {clearArmed ? "确认清空" : "× 清空"}
-            </button>
-          </div>
+          <section className="rail-section rail-section--tools" aria-label="绘图工具列表">
+            <header className="rail-heading">
+              <span>绘图工具</span>
+              <strong>{TOOL_ITEMS.length} 种</strong>
+            </header>
+            <div className="tool-scroll">
+              <div className="tool-grid">
+                {TOOL_ITEMS.map((item) => (
+                  <button
+                    type="button"
+                    key={item.id}
+                    className={`tool-button ${tool === item.id ? "is-active" : ""}`}
+                    aria-pressed={tool === item.id}
+                    title={`${item.label} (${item.key})`}
+                    onClick={() => setTool(item.id)}
+                  >
+                    <span aria-hidden="true">{item.glyph}</span>
+                    <strong>{item.label}</strong>
+                    <kbd>{item.key}</kbd>
+                  </button>
+                ))}
+              </div>
+              <div className="history-actions">
+                <button type="button" onClick={undo} disabled={!historyCount}>↶ 撤销</button>
+                <button type="button" onClick={redo} disabled={!futureCount}>↷ 重做</button>
+                <button
+                  type="button"
+                  className={clearArmed ? "is-danger" : ""}
+                  onClick={clearCanvas}
+                  disabled={!shapes.length}
+                >
+                  {clearArmed ? "确认清空" : "× 清空"}
+                </button>
+              </div>
+            </div>
+          </section>
         </aside>
 
         <section className="stage" aria-label="声音画布工作区">
           <div className="stage-status">
             <div className="live-status">
               <span className={`status-dot ${playing ? "is-live" : audioReady ? "is-ready" : ""}`} />
-              <strong>{playing ? "SEQUENCE LIVE" : audioReady ? "AUDIO READY" : "点击播放唤醒音频"}</strong>
+              <strong>{playing ? "正在播放" : audioReady ? "声音已就绪" : "点击播放启用声音"}</strong>
             </div>
             <div className="mapping-legend">
               <span>Y = 音高</span><i />
-              <span>X = 时间 / 声像</span><i />
+              <span>X = 时间</span><i />
               <span>宽度 = 音长</span><i />
-              <span>大小 = 力度</span>
+              <span>大小 = 力度</span><i />
+              <span>声像 = 独立控制</span>
             </div>
-            <button type="button" className="mutation-button" onClick={remix}>⌁ MUTATE 变奏</button>
+            <button type="button" className="mutation-button" onClick={remix}>生成变奏</button>
           </div>
 
-          <div className="timeline-ruler" aria-hidden="true">
-            {[1, 2, 3, 4].map((item) => <span key={item}>0{item} BAR</span>)}
+          <div className="timeline-strip">
+            <div className="timeline-navigation" aria-label="无限画布导航">
+              <div>
+                <button type="button" onClick={() => navigateToStep(0)} title="回到开头">|‹</button>
+                <button type="button" onClick={() => navigateToStep(viewStartStep - VIEW_STEPS)} title="向前四小节">‹</button>
+                <button type="button" onClick={() => navigateToStep(viewStartStep - STEPS_PER_BAR)} title="向前一小节">−1</button>
+              </div>
+              <label>
+                <span>无限画布 · 跳到小节</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={firstVisibleBar}
+                  onChange={(event) => navigateToStep((Math.max(1, Number(event.target.value) || 1) - 1) * STEPS_PER_BAR)}
+                  aria-label="跳转到小节"
+                />
+                <b>当前 {firstVisibleBar}–{lastVisibleBar}</b>
+              </label>
+              <div>
+                <button type="button" onClick={() => navigateToStep(viewStartStep + STEPS_PER_BAR)} title="向后一小节">+1</button>
+                <button type="button" onClick={() => navigateToStep(viewStartStep + VIEW_STEPS)} title="向后四小节">›</button>
+                <button type="button" onClick={() => navigateToStep(Math.max(0, totalSteps - VIEW_STEPS))} title="跳到作品结尾">›|</button>
+              </div>
+            </div>
+            <div className="timeline-ruler" aria-hidden="true">
+              {visibleBarMarkers.map((item) => (
+                <span key={item.step} style={{ left: `${item.left}%` }}>第 {item.bar} 小节</span>
+              ))}
+            </div>
           </div>
           <div className={`canvas-frame tool-${tool}`}>
             <canvas
@@ -1381,21 +2355,22 @@ export default function Home() {
               onPointerMove={onCanvasPointerMove}
               onPointerUp={onCanvasPointerUp}
               onPointerCancel={onCanvasPointerUp}
+              onWheel={onCanvasWheel}
             />
-            <div className={`playhead ${playing ? "is-visible" : ""}`} style={{ left: `${playhead * 100}%` }} aria-hidden="true">
+            <div className={`playhead ${playheadVisible ? "is-visible" : ""}`} style={{ left: `${playheadLeft}%` }} aria-hidden="true">
               <span />
             </div>
-            <div className="pitch-labels" aria-hidden="true"><span>HIGH</span><span>MID</span><span>LOW</span></div>
+            <div className="pitch-labels" aria-hidden="true"><span>高音</span><span>中音</span><span>低音</span></div>
             {!shapes.length && (
               <div className="empty-state">
                 <div className="ghost-composition" aria-hidden="true">
                   <i className="ghost-one" /><i className="ghost-two" /><i className="ghost-three" />
                 </div>
-                <p className="eyebrow">BLANK SEQUENCE / 空白序列</p>
-                <h2>先画下形状，再听见颜色。</h2>
-                <p>选择左侧声音画笔，在网格点按或拖动。纵向决定音高，横向决定它何时响起。</p>
+                <p className="eyebrow">从这里开始</p>
+                <h2>画一个形状，听见它的声音</h2>
+                <p>选择左侧声音画笔，在网格点按或拖动。纵向决定音高或鼓件，横向决定它何时响起。</p>
                 <div>
-                  <button type="button" className="button button--primary" onClick={loadDemo}>▶ 载入 4 小节示例</button>
+                  <button type="button" className="button button--primary" onClick={loadDemo}>载入示例作品</button>
                   <span>或直接在画布落笔</span>
                 </div>
               </div>
@@ -1406,56 +2381,70 @@ export default function Home() {
             {tool === "stamp" && "拖拽印章：横向长度控制音长，纵向距离控制力度 · S"}
             {tool === "select" && "拖动声音事件改变时间与音高，右侧可精确编辑 · V"}
             {tool === "erase" && "划过声音事件即可擦除 · E"}
+            {tool === "pan" && "拖动画布前往任意时间；滚轮也可以横向浏览 · H"}
             <span>SPACE 播放 / 停止</span>
           </p>
         </section>
 
         <aside className="inspector" aria-label="声音事件检查器">
           <div className="panel-heading">
-            <div><p className="eyebrow">EVENT INSPECTOR</p><h2>{selectedShape ? "事件参数" : "序列 DNA"}</h2></div>
-            <span>{selectedShape ? "ACTIVE" : "GLOBAL"}</span>
+            <div><p className="eyebrow">声音设置</p><h2>{selectedShape ? "调整这个声音" : "作品概览"}</h2></div>
+            <span>{selectedShape ? "已选择" : "全部"}</span>
           </div>
 
           {selectedShape ? (
             <div className="selected-editor">
               <div
                 className="selected-identity"
-                style={{ "--instrument-color": getInstrument(selectedShape.instrument).color } as CSSProperties}
+                style={{
+                  "--instrument-color": getInstrument(selectedShape.instrument).color,
+                  "--instrument-accent": getInstrument(selectedShape.instrument).accent,
+                } as CSSProperties}
               >
                 <span className={formClass(getInstrument(selectedShape.instrument).form)} aria-hidden="true" />
-                <div><strong>{getInstrument(selectedShape.instrument).name}</strong><small>{midiToName(midiFromShape(selectedShape, scale))} · BEAT {shapeStartBeat(selectedShape).toFixed(2)}</small></div>
+                <div><strong>{getInstrument(selectedShape.instrument).name}</strong><small>{shapePitchLabel(selectedShape, scale)} · 第 {(selectedShape.startStep / STEPS_PER_BEAT + 1).toFixed(2)} 拍</small></div>
               </div>
               <label className="field-row">
-                <span>VOICE / 音色</span>
+                <span>音色</span>
                 <select value={selectedShape.instrument} onChange={(event) => updateSelected({ instrument: event.target.value as InstrumentId })}>
                   {INSTRUMENTS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>
               </label>
               <label className="range-field">
-                <span><b>PITCH</b><output>{midiToName(midiFromShape(selectedShape, scale))}</output></span>
+                <span><b>{isDrumInstrument(selectedShape.instrument) ? "鼓件" : "音高"}</b><output>{shapePitchLabel(selectedShape, scale)}</output></span>
                 <input type="range" min="0" max="1" step="0.01" value={1 - selectedShape.y} onChange={(event) => updateSelected({ y: 1 - Number(event.target.value) })} />
               </label>
-              <label className="range-field">
-                <span><b>START</b><output>{shapeStartBeat(selectedShape).toFixed(2)} beat</output></span>
-                <input type="range" min="0" max="1" step="0.005" value={selectedShape.x} onChange={(event) => updateSelected({ x: Number(event.target.value) })} />
+              <label className="field-row">
+                <span>开始位置 · 拍（可输入任意长度）</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.25"
+                  value={selectedShape.startStep / STEPS_PER_BEAT}
+                  onChange={(event) => updateSelected({ startStep: Math.max(0, Math.round(Number(event.target.value) * STEPS_PER_BEAT)) })}
+                />
               </label>
               <label className="range-field">
-                <span><b>DURATION</b><output>{eventDuration(selectedShape)} beat</output></span>
-                <input type="range" min="0.02" max="0.34" step="0.005" value={selectedShape.width} onChange={(event) => updateSelected({ width: Number(event.target.value) })} />
+                <span><b>音符长度</b><output>{eventDuration(selectedShape)} 拍</output></span>
+                <input type="range" min="1" max={MAX_NOTE_STEPS} step="1" value={selectedShape.durationSteps} onChange={(event) => updateSelected({ durationSteps: Number(event.target.value) })} />
               </label>
               <label className="range-field">
-                <span><b>VELOCITY</b><output>{Math.round(eventVelocity(selectedShape) * 100)}%</output></span>
+                <span><b>声像位置</b><output>{selectedShape.pan === 0 ? "中央" : `${selectedShape.pan < 0 ? "左" : "右"} ${Math.round(Math.abs(selectedShape.pan) * 100)}`}</output></span>
+                <input type="range" min="-1" max="1" step="0.01" value={selectedShape.pan} onChange={(event) => updateSelected({ pan: Number(event.target.value) })} />
+              </label>
+              <label className="range-field">
+                <span><b>力度</b><output>{Math.round(eventVelocity(selectedShape) * 100)}%</output></span>
                 <input type="range" min="0.035" max="0.18" step="0.005" value={selectedShape.size} onChange={(event) => updateSelected({ size: Number(event.target.value) })} />
               </label>
               <div className="derived-values">
-                <div><span>PAN</span><strong>{selectedShape.x < 0.46 ? "L" : selectedShape.x > 0.54 ? "R" : "C"} {Math.round(Math.abs(selectedShape.x * 144 - 72))}</strong></div>
-                <div><span>GRID</span><strong>1/16</strong></div>
+                <div><span>所在小节</span><strong>第 {Math.floor(selectedShape.startStep / STEPS_PER_BAR) + 1} 小节</strong></div>
+                <div><span>节拍精度</span><strong>1/16</strong></div>
               </div>
               <button type="button" className="delete-event" onClick={deleteSelected}>删除这个声音事件</button>
             </div>
           ) : (
             <>
-              <div className="dna-number"><strong>{String(shapes.length).padStart(2, "0")}</strong><span>SOUND<br />EVENTS</span></div>
+              <div className="dna-number"><strong>{shapes.length}</strong><span>个声音 · 不设上限</span></div>
               <div className="voice-meter-list">
                 {INSTRUMENTS.map((item) => (
                   <div className="voice-meter" key={item.id}>
@@ -1466,14 +2455,14 @@ export default function Home() {
                 ))}
               </div>
               <div className="analysis-card">
-                <p className="eyebrow">HARMONIC ENGINE</p>
-                <strong>{SCALES[scale].name}</strong>
-                <span>所有音符自动吸附到音阶，随机绘画也保持和谐。</span>
+                <p className="eyebrow">无限时间轴</p>
+                <strong>当前作品 {totalBars} 小节</strong>
+                <span>继续向右浏览即可延展；播放和导出会自动跟随最后一个声音。</span>
               </div>
               <div className="analysis-card analysis-card--accent">
-                <p className="eyebrow">COMPLEXTRO CORE</p>
-                <strong>SWING 56 / SIDECHAIN ON</strong>
-                <span>快速音色切换、碎拍细节与鼓组 ducking 已自动进入合成链。</span>
+                <p className="eyebrow">Complextro 律动</p>
+                <strong>56% Swing · 动态呼吸</strong>
+                <span>快速音色切换、碎拍细节与鼓组侧链已自动加入作品。</span>
               </div>
             </>
           )}
@@ -1481,10 +2470,10 @@ export default function Home() {
           <details className="event-list">
             <summary>无障碍事件列表 <span>{shapes.length}</span></summary>
             <ol>
-              {shapes.slice(0, 24).map((shape) => (
+              {eventPreview.map((shape) => (
                 <li key={shape.id}>
-                  <button type="button" onClick={() => { setSelectedId(shape.id); setTool("select"); }}>
-                    {getInstrument(shape.instrument).subtitle}，{midiToName(midiFromShape(shape, scale))}，第 {shapeStartBeat(shape).toFixed(2)} 拍，力度 {Math.round(eventVelocity(shape) * 100)}
+                  <button type="button" onClick={() => { setSelectedId(shape.id); setTool("select"); navigateToStep(Math.floor(shape.startStep / VIEW_STEPS) * VIEW_STEPS); }}>
+                    {getInstrument(shape.instrument).subtitle}，{shapePitchLabel(shape, scale)}，第 {(shape.startStep / STEPS_PER_BEAT + 1).toFixed(2)} 拍，力度 {Math.round(eventVelocity(shape) * 100)}
                   </button>
                 </li>
               ))}
@@ -1495,11 +2484,11 @@ export default function Home() {
 
       <footer className="transport" aria-label="播放控制">
         <div className="transport-left">
-          <button type="button" className={`loop-button ${loop ? "is-active" : ""}`} aria-pressed={loop} onClick={() => setLoop((value) => !value)}>↻ LOOP <span>{loop ? "ON" : "OFF"}</span></button>
-          <button type="button" onClick={() => { stopPlayback(); setPlayhead(0); }} aria-label="停止并回到开头">■ STOP</button>
+          <button type="button" className={`loop-button ${loop ? "is-active" : ""}`} aria-pressed={loop} onClick={() => setLoop((value) => !value)}>↻ 循环 <span>{loop ? "开启" : "关闭"}</span></button>
+          <button type="button" onClick={() => { stopPlayback(); setPlayheadBeat(0); navigateToStep(0); }} aria-label="停止并回到开头">■ 停止</button>
         </div>
         <div className="transport-main">
-          <div className="position-readout"><span>POSITION</span><strong>0{bar} : 0{beat} : 0{sixteenth}</strong></div>
+          <div className="position-readout"><span>播放位置</span><strong>{String(bar).padStart(2, "0")} : {String(beat).padStart(2, "0")} : {String(sixteenth).padStart(2, "0")}</strong></div>
           <button
             type="button"
             className={`play-button ${playing ? "is-playing" : ""}`}
@@ -1507,19 +2496,19 @@ export default function Home() {
             aria-label={playing ? "停止播放" : "播放序列"}
           >
             <span aria-hidden="true">{playing ? "■" : "▶"}</span>
-            <strong>{playing ? "STOP SEQUENCE" : "PLAY SEQUENCE"}</strong>
+            <strong>{playing ? "停止播放" : "播放作品"}</strong>
           </button>
-          <div className="duration-readout"><span>LENGTH</span><strong>{totalDuration.toFixed(1)} SEC</strong></div>
+          <div className="duration-readout"><span>{totalBars} 小节</span><strong>{formatDuration(totalDuration)}</strong></div>
         </div>
         <div className="master-control">
-          <button type="button" onClick={() => setMuted((value) => !value)}>{muted ? "MUTED" : "MASTER"}</button>
+          <button type="button" onClick={() => setMuted((value) => !value)}>{muted ? "已静音" : "音量"}</button>
           <input aria-label="主音量" type="range" min="0" max="1" step="0.01" value={volume} onChange={(event) => setVolume(Number(event.target.value))} />
           <output>{muted ? "00" : String(Math.round(volume * 100)).padStart(2, "0")}</output>
         </div>
       </footer>
 
       <div className={`toast ${toast ? "is-visible" : ""}`} role="status" aria-live="polite">{toast}</div>
-      {exporting && <div className="export-indicator" role="status"><span /><strong>OFFLINE RENDER</strong><small>正在合成完整立体声作品</small></div>}
+      {exporting && <div className="export-indicator" role="status"><span /><strong>正在分段生成音频 · {Math.round(exportProgress * 100)}%</strong><small>超长作品会直接流式写入磁盘，不占满内存</small><progress max="1" value={exportProgress} /></div>}
     </main>
   );
 }

@@ -22,24 +22,67 @@ test("server-renders the finished Synesthesia Canvas shell", async () => {
   const html = await response.text();
   assert.match(html, /<title>Synesthesia Canvas｜通感画布<\/title>/i);
   assert.match(html, /通感画布/);
-  assert.match(html, /NEON BRASS/);
-  assert.match(html, /PLAY SEQUENCE/);
+  assert.match(html, /明亮铜管/);
+  assert.match(html, /电光三味线/);
+  assert.match(html, /电光贝斯/);
+  assert.match(html, /虹彩和弦/);
+  assert.match(html, /竹风主奏/);
+  assert.match(html, /和祭太鼓/);
+  assert.match(html, /像素鼓机/);
+  assert.match(html, /故障切片鼓/);
+  assert.match(html, /霓虹祭典鼓/);
+  assert.doesNotMatch(html, /泡沫人声/);
+  assert.match(html, /13(?:<!-- -->)? 种/);
+  assert.match(html, /instrument-scroll/);
+  assert.match(html, /tool-scroll/);
+  assert.match(html, /播放作品/);
+  assert.match(html, /音阶 · .*13.* 种/);
+  assert.match(html, /D 阴音阶 · 樱花/);
+  assert.match(html, /E 岩户音阶/);
+  assert.match(html, /C 自然大调/);
+  assert.match(html, /C 全音音阶/);
+  assert.match(html, /无限画布/);
+  assert.match(html, /1\/16 · 无限延展/);
+  assert.match(html, /不设上限/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
 test("ships the audio, canvas, export, sharing, and responsive product code", async () => {
-  const [page, css, packageJson] = await Promise.all([
+  const [page, wav, css, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/wav.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /new OfflineAudioContext/);
-  assert.match(page, /encodeWav/);
+  assert.match(page, /encodePcm16/);
+  assert.match(page, /LOOKAHEAD_SECONDS/);
+  assert.match(page, /stringFeedback/);
+  assert.match(page, /addNoiseLayer/);
+  assert.match(page, /addVibrato/);
+  assert.match(page, /makeChipNoiseBuffer/);
+  assert.match(page, /isDrumInstrument\(shape\.instrument\)/);
+  assert.match(page, /shape\.instrument === "taiko"/);
+  assert.match(page, /shape\.instrument === "chipDrums"/);
+  assert.match(page, /shape\.instrument === "glitchDrums"/);
+  assert.match(page, /shape\.instrument === "festivalDrums"/);
+  assert.doesNotMatch(page, /\bvocal\b|泡沫人声/);
+  assert.match(page, /setInterval\(pump/);
+  assert.match(page, /viewStartStep/);
+  assert.match(page, /indexedDB\.open/);
+  assert.doesNotMatch(page, /MAX_SHAPES/);
+  assert.match(wav, /RF64/);
+  assert.match(wav, /showSaveFilePicker/);
   assert.match(page, /navigator\.clipboard/);
   assert.match(page, /onPointerDown/);
-  assert.match(page, /HIRAJOSHI/);
-  assert.match(css, /@media \(max-width: 720px\)/);
+  assert.match(page, /E 平调子/);
+  assert.match(css, /timeline-navigation/);
+  assert.match(css, /tool-pan/);
+  assert.match(css, /rail-section--voices/);
+  assert.match(css, /rail-section--tools/);
+  assert.match(css, /mini-shape--spark/);
+  assert.match(css, /@media \(max-width: 780px\)/);
   assert.match(css, /prefers-reduced-motion/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });
