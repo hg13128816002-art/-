@@ -89,6 +89,14 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(page, /RHYTHM_PATTERNS/);
   assert.match(page, /RHYTHM_LENGTHS.*1, 2, 4, 8/);
   assert.match(page, /makeRhythmShapes/);
+  const demoSource = page.slice(page.indexOf("const DEMO_PROJECT"), page.indexOf("function createDemo"));
+  assert.match(demoSource, /title: "春日回响 01"/);
+  assert.match(demoSource, /bpm: 125/);
+  assert.match(demoSource, /scale: "pentatonic"/);
+  const demoShapesJson = demoSource.match(/const DEMO_SHAPES_JSON = '([^']+)';/)?.[1];
+  assert.ok(demoShapesJson);
+  assert.equal(JSON.parse(demoShapesJson).length, 189);
+  assert.match(page, /setProjectTitle\(DEMO_PROJECT\.title\)/);
   assert.match(page, /commitShapes\(\[\.\.\.shapesRef\.current, \.\.\.inserted\]\)/);
   assert.match(page, /occupiedDrumSlots/);
   assert.match(page, /shapeStartBeat\(shape, swing\)/);
