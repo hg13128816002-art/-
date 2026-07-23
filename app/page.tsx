@@ -175,9 +175,10 @@ const EPSILON = 0.0001;
 const STEPS_PER_BEAT = 4;
 const BEATS_PER_BAR = 4;
 const STEPS_PER_BAR = STEPS_PER_BEAT * BEATS_PER_BAR;
-const VIEW_BARS = 4;
-const VIEW_STEPS = VIEW_BARS * STEPS_PER_BAR;
-const DEFAULT_PROJECT_STEPS = VIEW_STEPS;
+const DEFAULT_VIEW_BARS = 4;
+const DEFAULT_VIEW_STEPS = DEFAULT_VIEW_BARS * STEPS_PER_BAR;
+const BASE_PREVIEW_BARS = 64;
+const DEFAULT_PROJECT_STEPS = DEFAULT_VIEW_STEPS;
 const MAX_NOTE_STEPS = 64;
 const LOOKAHEAD_SECONDS = 0.24;
 const LATE_GRACE_SECONDS = 0.08;
@@ -821,6 +822,19 @@ function projectEndStep(shapes: SoundShape[]) {
     end = Math.max(end, shape.startStep + shape.durationSteps);
   }
   return Math.ceil(end / STEPS_PER_BAR) * STEPS_PER_BAR;
+}
+
+function timelineZoomStops(projectBars: number) {
+  const maximum = Math.max(BASE_PREVIEW_BARS, Math.ceil(projectBars));
+  const stops: number[] = [];
+  for (let bars = 1; bars < maximum; bars *= 2) stops.push(bars);
+  stops.push(maximum);
+  return stops;
+}
+
+function timelineMarkerStride(viewBars: number) {
+  if (viewBars <= 8) return 1;
+  return 2 ** Math.ceil(Math.log2(viewBars / 8));
 }
 
 function effectTailSeconds(bpm: number) {
@@ -1489,6 +1503,8 @@ export default function Home() {
   const transportRef = useRef<TransportState | null>(null);
   const loopRef = useRef(true);
   const viewStartStepRef = useRef(0);
+  const viewBarsRef = useRef(DEFAULT_VIEW_BARS);
+  const viewStepsRef = useRef(DEFAULT_VIEW_STEPS);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoredRef = useRef(false);
@@ -1509,6 +1525,7 @@ export default function Home() {
   const [playing, setPlaying] = useState(false);
   const [playheadBeat, setPlayheadBeat] = useState(0);
   const [viewStartStep, setViewStartStep] = useState(0);
+  const [viewBars, setViewBars] = useState(DEFAULT_VIEW_BARS);
   const [audioReady, setAudioReady] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
@@ -1522,6 +1539,7 @@ export default function Home() {
   const [rhythmLength, setRhythmLength] = useState<RhythmLengthBars>(2);
   const [rhythmComplexity, setRhythmComplexity] = useState<RhythmComplexity>(2);
   const [rhythmVariant, setRhythmVariant] = useState(0);
+  const viewSteps = viewBars * STEPS_PER_BAR;
 
   const selectedShape = useMemo(
     () => shapes.find((shape) => shape.id === selectedId) ?? null,
@@ -1630,6 +1648,41 @@ export default function Home() {
     setViewStartStep(next);
   }, []);
 
+  const applyTimelineZoom = useCallback(
+    (nextBars: number, anchorStep?: number, anchorRatio = 0.5) => {
+      const safeBars = Math.max(1, Math.ceil(nextBars));
+      const currentSteps = viewStepsRef.current;
+      const nextSteps = safeBars * STEPS_PER_BAR;
+      const safeRatio = clamp(anchorRatio);
+      const anchor =
+        anchorStep ?? viewStartStepRef.current + currentSteps * safeRatio;
+      viewBarsRef.current = safeBars;
+      viewStepsRef.current = nextSteps;
+      setViewBars(safeBars);
+      navigateToStep(anchor - nextSteps * safeRatio);
+    },
+    [navigateToStep],
+  );
+
+  const zoomTimeline = useCallback(
+    (direction: "compress" | "stretch", anchorStep?: number, anchorRatio = 0.5) => {
+      const projectBars = projectEndStep(shapesRef.current) / STEPS_PER_BAR;
+      const stops = timelineZoomStops(projectBars);
+      const current = viewBarsRef.current;
+      const next =
+        direction === "compress"
+          ? stops.find((bars) => bars > current) ?? stops.at(-1) ?? current
+          : stops.filter((bars) => bars < current).at(-1) ?? stops[0] ?? current;
+      applyTimelineZoom(next, anchorStep, anchorRatio);
+    },
+    [applyTimelineZoom],
+  );
+
+  const fitTimeline = useCallback(() => {
+    const projectSteps = projectEndStep(shapesRef.current);
+    applyTimelineZoom(projectSteps / STEPS_PER_BAR, projectSteps / 2);
+  }, [applyTimelineZoom]);
+
   const play = useCallback(async () => {
     if (playing) {
       stopPlayback();
@@ -1735,11 +1788,12 @@ export default function Home() {
       const nextBeat = timelineSeconds / state.secondsPerBeat;
       setPlayheadBeat(nextBeat);
       const nextStep = nextBeat * STEPS_PER_BEAT;
+      const visibleSteps = viewStepsRef.current;
       if (
         nextStep < viewStartStepRef.current ||
-        nextStep >= viewStartStepRef.current + VIEW_STEPS
+        nextStep >= viewStartStepRef.current + visibleSteps
       ) {
-        const nextView = Math.floor(nextStep / VIEW_STEPS) * VIEW_STEPS;
+        const nextView = Math.floor(nextStep / visibleSteps) * visibleSteps;
         viewStartStepRef.current = nextView;
         setViewStartStep(nextView);
       }
@@ -1771,9 +1825,17 @@ export default function Home() {
 
     context.fillStyle = "#e8e8ef";
     const visibleStart = viewStartStep;
-    const visibleEnd = visibleStart + VIEW_STEPS;
-    for (let step = Math.ceil(visibleStart); step <= visibleEnd; step += 1) {
-      const x = ((step - visibleStart) / VIEW_STEPS) * width;
+    const visibleEnd = visibleStart + viewSteps;
+    const pixelsPerStep = width / viewSteps;
+    const gridStep =
+      pixelsPerStep >= 4
+        ? 1
+        : pixelsPerStep * STEPS_PER_BEAT >= 4
+          ? STEPS_PER_BEAT
+          : STEPS_PER_BAR * timelineMarkerStride(viewBars);
+    const firstGridStep = Math.ceil(visibleStart / gridStep) * gridStep;
+    for (let step = firstGridStep; step <= visibleEnd; step += gridStep) {
+      const x = ((step - visibleStart) / viewSteps) * width;
       for (let line = 0; line <= 12; line += 1) {
         const y = (line / 12) * height;
         context.beginPath();
@@ -1805,9 +1867,10 @@ export default function Home() {
       const shapeEnd = shape.startStep + shape.durationSteps;
       if (shapeEnd < visibleStart) continue;
       const config = getInstrument(shape.instrument);
-      const x = ((shape.startStep + shape.durationSteps / 2 - visibleStart) / VIEW_STEPS) * width;
+      const x = ((shape.startStep + shape.durationSteps / 2 - visibleStart) / viewSteps) * width;
       const y = shape.y * height;
-      const shapeWidth = Math.max(12, (shape.durationSteps / VIEW_STEPS) * width);
+      const minimumShapeWidth = viewBars <= 4 ? 12 : viewBars <= 16 ? 7 : 3;
+      const shapeWidth = Math.max(minimumShapeWidth, (shape.durationSteps / viewSteps) * width);
       const shapeHeight = Math.max(14, shape.size * height);
       const selected = shape.id === selectedId;
       context.save();
@@ -1913,7 +1976,7 @@ export default function Home() {
       }
       context.restore();
     }
-  }, [selectedId, viewStartStep]);
+  }, [selectedId, viewBars, viewStartStep, viewSteps]);
 
   useEffect(() => {
     drawCanvas();
@@ -2049,16 +2112,18 @@ export default function Home() {
     const screenX = clamp((event.clientX - bounds.left) / bounds.width);
     return {
       screenX,
-      step: Math.max(0, Math.round(viewStartStepRef.current + screenX * VIEW_STEPS)),
+      step: Math.max(0, Math.round(viewStartStepRef.current + screenX * viewStepsRef.current)),
       y: clamp((event.clientY - bounds.top) / bounds.height),
     };
   };
 
   const findShapeAt = (step: number, y: number) => {
     const timeline = timelineShapesRef.current;
+    const canvasWidth = Math.max(1, canvasRef.current?.clientWidth ?? 640);
+    const stepTolerance = Math.max(1, viewStepsRef.current / canvasWidth * 7);
     let low = 0;
     let high = timeline.length;
-    const earliestStart = Math.max(0, step - MAX_NOTE_STEPS - 1);
+    const earliestStart = Math.max(0, step - MAX_NOTE_STEPS - stepTolerance);
     while (low < high) {
       const middle = (low + high) >>> 1;
       if (timeline[middle].startStep < earliestStart) low = middle + 1;
@@ -2067,11 +2132,11 @@ export default function Home() {
     const candidates: SoundShape[] = [];
     for (let index = low; index < timeline.length; index += 1) {
       const shape = timeline[index];
-      if (shape.startStep > step + 1) break;
+      if (shape.startStep > step + stepTolerance) break;
       const height = Math.max(0.04, shape.size) * 0.8;
       if (
-        step >= shape.startStep - 1 &&
-        step <= shape.startStep + shape.durationSteps + 1 &&
+        step >= shape.startStep - stepTolerance &&
+        step <= shape.startStep + shape.durationSteps + stepTolerance &&
         Math.abs(shape.y - y) <= height
       ) {
         candidates.push(shape);
@@ -2172,7 +2237,8 @@ export default function Home() {
     const point = pointFromEvent(event);
     if (interaction.kind === "pan") {
       const bounds = event.currentTarget.getBoundingClientRect();
-      const deltaSteps = (event.clientX - interaction.startClientX) / bounds.width * VIEW_STEPS;
+      const deltaSteps =
+        (event.clientX - interaction.startClientX) / bounds.width * viewStepsRef.current;
       navigateToStep(interaction.startViewStep - deltaSteps);
     } else if (interaction.kind === "move") {
       setShapesDirect(
@@ -2221,6 +2287,14 @@ export default function Home() {
 
   const onCanvasWheel = (event: ReactWheelEvent<HTMLCanvasElement>) => {
     event.preventDefault();
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const anchorRatio = clamp((event.clientX - bounds.left) / bounds.width);
+      const anchorStep =
+        viewStartStepRef.current + anchorRatio * viewStepsRef.current;
+      zoomTimeline(event.deltaY > 0 ? "compress" : "stretch", anchorStep, anchorRatio);
+      return;
+    }
     const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
     const direction = Math.sign(delta);
     const distance = Math.max(1, Math.round(Math.abs(delta) / 18));
@@ -2479,11 +2553,18 @@ export default function Home() {
       else if (event.key.toLowerCase() === "s") setTool("stamp");
       else if (event.key.toLowerCase() === "e") setTool("erase");
       else if (event.key.toLowerCase() === "h") setTool("pan");
+      else if (event.key === "-" || event.key === "_") {
+        event.preventDefault();
+        zoomTimeline("compress");
+      } else if (event.key === "=" || event.key === "+") {
+        event.preventDefault();
+        zoomTimeline("stretch");
+      }
       else if (event.key === "Delete" || event.key === "Backspace") deleteSelected();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [deleteSelected, play, redo, undo]);
+  }, [deleteSelected, play, redo, undo, zoomTimeline]);
 
   const instrumentCounts = useMemo(
     () =>
@@ -2510,23 +2591,24 @@ export default function Home() {
   const sixteenth = Math.floor((displayBeat % 1) * STEPS_PER_BEAT) + 1;
   const playheadStep = playheadBeat * STEPS_PER_BEAT;
   const playheadVisible =
-    playing && playheadStep >= viewStartStep && playheadStep <= viewStartStep + VIEW_STEPS;
-  const playheadLeft = (playheadStep - viewStartStep) / VIEW_STEPS * 100;
+    playing && playheadStep >= viewStartStep && playheadStep <= viewStartStep + viewSteps;
+  const playheadLeft = (playheadStep - viewStartStep) / viewSteps * 100;
   const visibleBarMarkers: { step: number; bar: number; left: number }[] = [];
+  const markerStrideSteps = timelineMarkerStride(viewBars) * STEPS_PER_BAR;
   const firstVisibleBarStep = Math.ceil(viewStartStep / STEPS_PER_BAR) * STEPS_PER_BAR;
   for (
     let step = firstVisibleBarStep;
-    step <= viewStartStep + VIEW_STEPS;
-    step += STEPS_PER_BAR
+    step <= viewStartStep + viewSteps;
+    step += markerStrideSteps
   ) {
     visibleBarMarkers.push({
       step,
       bar: step / STEPS_PER_BAR + 1,
-      left: (step - viewStartStep) / VIEW_STEPS * 100,
+      left: (step - viewStartStep) / viewSteps * 100,
     });
   }
   const firstVisibleBar = Math.floor(viewStartStep / STEPS_PER_BAR) + 1;
-  const lastVisibleBar = Math.floor((viewStartStep + VIEW_STEPS - 1) / STEPS_PER_BAR) + 1;
+  const lastVisibleBar = Math.floor((viewStartStep + viewSteps - 1) / STEPS_PER_BAR) + 1;
 
   return (
     <main className="app-shell">
@@ -2878,7 +2960,7 @@ export default function Home() {
             <div className="timeline-navigation" aria-label="无限画布导航">
               <div>
                 <button type="button" onClick={() => navigateToStep(0)} title="回到开头">|‹</button>
-                <button type="button" onClick={() => navigateToStep(viewStartStep - VIEW_STEPS)} title="向前四小节">‹</button>
+                <button type="button" onClick={() => navigateToStep(viewStartStep - viewSteps)} title={`向前 ${viewBars} 小节`}>‹</button>
                 <button type="button" onClick={() => navigateToStep(viewStartStep - STEPS_PER_BAR)} title="向前一小节">−1</button>
               </div>
               <label>
@@ -2893,10 +2975,44 @@ export default function Home() {
                 />
                 <b>当前 {firstVisibleBar}–{lastVisibleBar}</b>
               </label>
+              <div className="timeline-zoom" role="group" aria-label="画布时间轴缩放">
+                <button
+                  type="button"
+                  className="timeline-zoom-compress"
+                  onClick={() => zoomTimeline("compress")}
+                  disabled={viewBars >= Math.max(BASE_PREVIEW_BARS, totalBars)}
+                  aria-label="压缩时间轴，一屏显示更多小节"
+                  title="压缩时间轴（−）"
+                >
+                  <span aria-hidden="true">−</span><b>压缩</b>
+                </button>
+                <output aria-live="polite">
+                  <strong>{viewBars}</strong><span> 小节/屏</span>
+                </output>
+                <button
+                  type="button"
+                  className="timeline-zoom-stretch"
+                  onClick={() => zoomTimeline("stretch")}
+                  disabled={viewBars <= 1}
+                  aria-label="拉长时间轴，精细查看更少小节"
+                  title="拉长时间轴（+）"
+                >
+                  <span aria-hidden="true">+</span><b>拉长</b>
+                </button>
+                <button
+                  type="button"
+                  className="timeline-zoom-fit"
+                  onClick={fitTimeline}
+                  aria-label={`适应全曲，共 ${totalBars} 小节`}
+                  title="让整首曲子适应当前画布"
+                >
+                  全曲
+                </button>
+              </div>
               <div>
                 <button type="button" onClick={() => navigateToStep(viewStartStep + STEPS_PER_BAR)} title="向后一小节">+1</button>
-                <button type="button" onClick={() => navigateToStep(viewStartStep + VIEW_STEPS)} title="向后四小节">›</button>
-                <button type="button" onClick={() => navigateToStep(Math.max(0, totalSteps - VIEW_STEPS))} title="跳到作品结尾">›|</button>
+                <button type="button" onClick={() => navigateToStep(viewStartStep + viewSteps)} title={`向后 ${viewBars} 小节`}>›</button>
+                <button type="button" onClick={() => navigateToStep(Math.max(0, totalSteps - viewSteps))} title="跳到作品结尾">›|</button>
               </div>
             </div>
             <div className="timeline-ruler" aria-hidden="true">
@@ -2942,7 +3058,7 @@ export default function Home() {
             {tool === "select" && "拖动声音事件改变时间与音高，右侧可精确编辑 · V"}
             {tool === "erase" && "划过声音事件即可擦除 · E"}
             {tool === "pan" && "拖动画布前往任意时间；滚轮也可以横向浏览 · H"}
-            <span>SPACE 播放 / 停止</span>
+            <span>SPACE 播放 / 停止 · − 压缩 · + 拉长 · Ctrl/⌘/Alt + 滚轮缩放</span>
           </p>
         </section>
 
@@ -3036,7 +3152,7 @@ export default function Home() {
             <ol>
               {eventPreview.map((shape) => (
                 <li key={shape.id}>
-                  <button type="button" onClick={() => { setSelectedId(shape.id); setTool("select"); navigateToStep(Math.floor(shape.startStep / VIEW_STEPS) * VIEW_STEPS); }}>
+                  <button type="button" onClick={() => { setSelectedId(shape.id); setTool("select"); navigateToStep(Math.floor(shape.startStep / viewSteps) * viewSteps); }}>
                     {getInstrument(shape.instrument).subtitle}，{shapePitchLabel(shape, scale)}，第 {(shape.startStep / STEPS_PER_BEAT + 1).toFixed(2)} 拍，力度 {Math.round(eventVelocity(shape) * 100)}
                   </button>
                 </li>

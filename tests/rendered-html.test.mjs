@@ -109,6 +109,14 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.doesNotMatch(page, /\bvocal\b|泡沫人声/);
   assert.match(page, /setInterval\(pump/);
   assert.match(page, /viewStartStep/);
+  assert.match(page, /timelineZoomStops/);
+  assert.match(page, /applyTimelineZoom/);
+  assert.match(page, /fitTimeline/);
+  assert.match(page, /viewStepsRef\.current/);
+  assert.match(page, /压缩时间轴，一屏显示更多小节/);
+  assert.match(page, /拉长时间轴，精细查看更少小节/);
+  assert.match(page, /适应全曲，共/);
+  assert.doesNotMatch(page, /\bVIEW_STEPS\b/);
   assert.match(page, /indexedDB\.open/);
   assert.doesNotMatch(page, /MAX_SHAPES/);
   assert.match(wav, /RF64/);
@@ -117,6 +125,9 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(page, /onPointerDown/);
   assert.match(page, /E 平调子/);
   assert.match(css, /timeline-navigation/);
+  assert.match(css, /timeline-zoom-compress/);
+  assert.match(css, /timeline-zoom-stretch/);
+  assert.match(css, /timeline-zoom-fit/);
   assert.match(css, /tool-pan/);
   assert.match(css, /rail-section--voices/);
   assert.match(css, /rail-section--tools/);

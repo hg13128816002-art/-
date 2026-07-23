@@ -753,9 +753,9 @@ input::selection {
 .timeline-navigation {
   min-width: 0;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(108px, 1fr) auto auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .timeline-navigation > div {
@@ -831,6 +831,91 @@ input::selection {
   font-size: 9px;
   font-weight: 760;
   text-align: center;
+}
+
+.timeline-zoom {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 13px;
+  background: var(--surface-soft);
+}
+
+.timeline-navigation .timeline-zoom button {
+  width: auto;
+  min-width: 54px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
+  color: #ffffff;
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 9px;
+}
+
+.timeline-navigation .timeline-zoom button > span {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.timeline-navigation .timeline-zoom button > b {
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.timeline-navigation .timeline-zoom-compress {
+  background: var(--coral);
+}
+
+.timeline-navigation .timeline-zoom-stretch {
+  background: var(--sky);
+}
+
+.timeline-navigation .timeline-zoom-fit {
+  min-width: 44px;
+  background: var(--sun);
+  color: var(--text);
+  font-weight: 850;
+}
+
+.timeline-navigation .timeline-zoom-compress:hover:not(:disabled) {
+  background: #ee405f;
+}
+
+.timeline-navigation .timeline-zoom-stretch:hover:not(:disabled) {
+  background: #078fe6;
+}
+
+.timeline-navigation .timeline-zoom-fit:hover:not(:disabled) {
+  background: #ffc400;
+  color: var(--text);
+}
+
+.timeline-zoom output {
+  min-width: 72px;
+  height: 30px;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 2px;
+  padding: 7px 8px 0;
+  border-radius: 10px;
+  background: var(--violet);
+  color: #ffffff;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.timeline-zoom output strong {
+  font-size: 11px;
+  font-weight: 850;
 }
 
 .timeline-ruler {
@@ -1813,6 +1898,7 @@ input[type="range"] {
   }
 
   .timeline-navigation {
+    grid-template-columns: auto 50px minmax(128px, auto) auto;
     gap: 5px;
   }
 
@@ -1831,6 +1917,31 @@ input[type="range"] {
 
   .timeline-navigation > label span {
     display: none;
+  }
+
+  .timeline-navigation .timeline-zoom {
+    gap: 2px;
+  }
+
+  .timeline-navigation .timeline-zoom button {
+    width: auto;
+    min-width: 29px;
+    padding-inline: 7px;
+  }
+
+  .timeline-navigation .timeline-zoom button > b,
+  .timeline-zoom output span {
+    display: none;
+  }
+
+  .timeline-zoom output {
+    min-width: 34px;
+    padding-inline: 6px;
+  }
+
+  .timeline-navigation .timeline-zoom-fit {
+    min-width: 39px;
+    padding-inline: 6px;
   }
 
   .stage-status {
@@ -1950,6 +2061,11 @@ input[type="range"] {
     display: none;
   }
 
+  .timeline-navigation {
+    grid-template-columns: auto 44px minmax(112px, 1fr) auto;
+    gap: 3px;
+  }
+
   .timeline-navigation > label {
     grid-template-columns: 44px;
     padding: 4px;
@@ -1961,6 +2077,29 @@ input[type="range"] {
 
   .timeline-navigation > label input {
     width: 44px;
+  }
+
+  .timeline-navigation .timeline-zoom {
+    justify-content: center;
+    padding: 2px;
+  }
+
+  .timeline-navigation .timeline-zoom button {
+    min-width: 27px;
+    height: 28px;
+    padding-inline: 5px;
+  }
+
+  .timeline-zoom output {
+    min-width: 30px;
+    height: 28px;
+    padding-top: 6px;
+    padding-inline: 4px;
+  }
+
+  .timeline-navigation .timeline-zoom-fit {
+    min-width: 35px;
+    font-size: 8px;
   }
 
   .tool-button kbd {
