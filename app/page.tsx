@@ -8,7 +8,6 @@ import {
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { createWavHeader, encodePcm16, suggestWavFile, type WavWritableStream } from "./wav";
 
@@ -1487,6 +1486,7 @@ function formClass(form: ShapeForm) {
 
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasFrameRef = useRef<HTMLDivElement>(null);
   const shapesRef = useRef<SoundShape[]>([]);
   const timelineShapesRef = useRef<SoundShape[]>([]);
   const interactionRef = useRef<Interaction | null>(null);
@@ -2281,11 +2281,14 @@ export default function Home() {
     finishGesture();
   };
 
-  const onCanvasWheel = (event: ReactWheelEvent<HTMLCanvasElement>) => {
+  const onCanvasWheel = useCallback((event: WheelEvent) => {
     event.preventDefault();
+    event.stopPropagation();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
     if (event.ctrlKey || event.metaKey || event.altKey) {
       wheelStepRemainderRef.current = 0;
-      const bounds = event.currentTarget.getBoundingClientRect();
+      const bounds = canvas.getBoundingClientRect();
       const anchorRatio = clamp((event.clientX - bounds.left) / bounds.width);
       const anchorStep =
         viewStartStepRef.current + anchorRatio * viewStepsRef.current;
@@ -2296,7 +2299,7 @@ export default function Home() {
       }
       return;
     }
-    const bounds = event.currentTarget.getBoundingClientRect();
+    const bounds = canvas.getBoundingClientRect();
     const horizontalGesture =
       Math.abs(event.deltaX) > 0.01 &&
       Math.abs(event.deltaX) >= Math.abs(event.deltaY) * 0.5;
@@ -2311,7 +2314,14 @@ export default function Home() {
     if (wholeSteps !== 0) {
       navigateToStep(viewStartStepRef.current + wholeSteps);
     }
-  };
+  }, [navigateToStep, zoomTimeline]);
+
+  useEffect(() => {
+    const frame = canvasFrameRef.current;
+    if (!frame) return;
+    frame.addEventListener("wheel", onCanvasWheel, { passive: false, capture: true });
+    return () => frame.removeEventListener("wheel", onCanvasWheel, true);
+  }, [onCanvasWheel]);
 
   const updateSelected = (patch: Partial<SoundShape>) => {
     if (!selectedId) return;
@@ -3039,7 +3049,7 @@ export default function Home() {
               ))}
             </div>
           </div>
-          <div className={`canvas-frame tool-${tool}`}>
+          <div ref={canvasFrameRef} className={`canvas-frame tool-${tool}`}>
             <canvas
               ref={canvasRef}
               tabIndex={0}
@@ -3049,7 +3059,6 @@ export default function Home() {
               onPointerMove={onCanvasPointerMove}
               onPointerUp={onCanvasPointerUp}
               onPointerCancel={onCanvasPointerUp}
-              onWheel={onCanvasWheel}
             />
             <div className={`playhead ${playheadVisible ? "is-visible" : ""}`} style={{ left: `${playheadLeft}%` }} aria-hidden="true">
               <span />

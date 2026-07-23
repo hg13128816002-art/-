@@ -116,6 +116,10 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(page, /aria-valuetext=\{`一屏显示 \$\{viewBars\} 小节`\}/);
   assert.match(page, /wheelStepRemainderRef/);
   assert.match(page, /horizontalGesture/);
+  assert.match(page, /addEventListener\("wheel", onCanvasWheel, \{ passive: false, capture: true \}\)/);
+  assert.match(page, /removeEventListener\("wheel", onCanvasWheel, true\)/);
+  assert.match(page, /ref=\{canvasFrameRef\}/);
+  assert.doesNotMatch(page, /onWheel=\{/);
   assert.match(page, /window\.addEventListener\("keydown", onKeyDown, true\)/);
   assert.match(page, /window\.addEventListener\("keyup", onKeyUp, true\)/);
   assert.match(page, /if \(!event\.repeat\) void play\(\)/);
@@ -136,6 +140,7 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(css, /timeline-navigation/);
   assert.match(css, /\.timeline-zoom input\[type="range"\]/);
   assert.match(css, /cursor: ew-resize/);
+  assert.match(css, /\.canvas-frame[\s\S]*?overscroll-behavior: none/);
   assert.match(css, /tool-pan/);
   assert.match(css, /rail-section--voices/);
   assert.match(css, /rail-section--tools/);

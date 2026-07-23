@@ -952,6 +952,7 @@ input::selection {
   position: relative;
   min-height: 0;
   overflow: hidden;
+  overscroll-behavior: none;
   border: 1px solid var(--line-strong);
   border-radius: 19px;
   background: #ffffff;
@@ -962,6 +963,7 @@ input::selection {
   height: 100%;
   display: block;
   touch-action: none;
+  overscroll-behavior: none;
 }
 
 .canvas-frame.tool-select canvas { cursor: grab; }
