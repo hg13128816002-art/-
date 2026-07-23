@@ -344,8 +344,48 @@ input::selection {
 .instrument-list {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 13px;
   margin-top: 11px;
+}
+
+.instrument-group,
+.instrument-group-items {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.instrument-group-heading {
+  min-height: 18px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-inline: 2px;
+  color: var(--muted);
+}
+
+.instrument-group-heading::before {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--group-color);
+  content: "";
+}
+
+.instrument-group-heading span {
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.035em;
+}
+
+.instrument-group-heading small {
+  margin-left: auto;
+  color: var(--text-soft);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 650;
 }
 
 .instrument-button {
@@ -2589,9 +2629,20 @@ input[type="range"] {
 
   .instrument-scroll .instrument-list {
     width: max-content;
+    align-items: stretch;
+    gap: 16px;
     margin: 0;
     padding: 0;
     overflow: visible;
+  }
+
+  .instrument-scroll .instrument-group {
+    flex: 0 0 auto;
+    gap: 6px;
+  }
+
+  .instrument-scroll .instrument-group-items {
+    flex-direction: row;
   }
 
   .instrument-scroll .instrument-button {

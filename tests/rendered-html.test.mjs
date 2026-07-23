@@ -27,6 +27,8 @@ test("server-renders the finished Synesthesia Canvas shell", async () => {
   assert.match(html, /电光贝斯/);
   assert.match(html, /虹彩和弦/);
   assert.match(html, /竹风主奏/);
+  assert.match(html, /旋律与和声/);
+  assert.match(html, /节奏与鼓组/);
   assert.match(html, /和祭太鼓/);
   assert.match(html, /像素鼓机/);
   assert.match(html, /故障切片鼓/);
@@ -44,14 +46,21 @@ test("server-renders the finished Synesthesia Canvas shell", async () => {
   assert.match(html, /无限画布/);
   assert.match(html, /1\/16 · 无限延展/);
   assert.match(html, /不设上限/);
+  assert.match(html, /icon\.svg/);
+
+  const drumNames = ["活力鼓组", "和祭太鼓", "像素鼓机", "故障切片鼓", "霓虹祭典鼓"];
+  const firstDrumPositions = drumNames.map((name) => html.indexOf(name));
+  assert.ok(firstDrumPositions.every((position) => position >= 0));
+  assert.deepEqual(firstDrumPositions, [...firstDrumPositions].sort((a, b) => a - b));
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|react-loading-skeleton/i);
 });
 
 test("ships the audio, canvas, export, sharing, and responsive product code", async () => {
-  const [page, wav, css, packageJson] = await Promise.all([
+  const [page, wav, css, favicon, packageJson] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/wav.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/icon.svg", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
@@ -81,8 +90,13 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(css, /tool-pan/);
   assert.match(css, /rail-section--voices/);
   assert.match(css, /rail-section--tools/);
+  assert.match(css, /instrument-group-heading/);
   assert.match(css, /mini-shape--spark/);
   assert.match(css, /@media \(max-width: 780px\)/);
   assert.match(css, /prefers-reduced-motion/);
+  assert.match(favicon, /viewBox="0 0 64 64"/);
+  assert.match(favicon, /#3867FF/);
+  assert.match(favicon, /#FF526F/);
+  assert.match(favicon, /#FFD31A/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
 });

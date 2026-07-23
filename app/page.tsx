@@ -187,18 +187,8 @@ const INSTRUMENTS: Instrument[] = [
     defaultSize: 0.061,
   },
   {
-    id: "drums",
-    code: "04",
-    name: "活力鼓组",
-    subtitle: "清爽 · 有弹性",
-    color: "#ff7338",
-    accent: "#7657ff",
-    form: "block",
-    defaultSize: 0.054,
-  },
-  {
     id: "strings",
-    code: "05",
+    code: "04",
     name: "樱花弦乐",
     subtitle: "柔和 · 有延展",
     color: "#8a68ff",
@@ -208,7 +198,7 @@ const INSTRUMENTS: Instrument[] = [
   },
   {
     id: "pluck",
-    code: "06",
+    code: "05",
     name: "电光三味线",
     subtitle: "圆润 · 木质弹拨",
     color: "#ffe600",
@@ -218,7 +208,7 @@ const INSTRUMENTS: Instrument[] = [
   },
   {
     id: "bass",
-    code: "07",
+    code: "06",
     name: "电光贝斯",
     subtitle: "低沉 · 弹跳切片",
     color: "#8b72ff",
@@ -228,7 +218,7 @@ const INSTRUMENTS: Instrument[] = [
   },
   {
     id: "chord",
-    code: "08",
+    code: "07",
     name: "虹彩和弦",
     subtitle: "宽阔 · 未来感",
     color: "#ff55d7",
@@ -238,13 +228,23 @@ const INSTRUMENTS: Instrument[] = [
   },
   {
     id: "flute",
-    code: "09",
+    code: "08",
     name: "竹风主奏",
     subtitle: "清亮 · 和风呼吸",
     color: "#a7e51c",
     accent: "#7657ff",
     form: "drop",
     defaultSize: 0.065,
+  },
+  {
+    id: "drums",
+    code: "09",
+    name: "活力鼓组",
+    subtitle: "清爽 · 有弹性",
+    color: "#ff7338",
+    accent: "#7657ff",
+    form: "block",
+    defaultSize: 0.054,
   },
   {
     id: "taiko",
@@ -295,6 +295,21 @@ const DRUM_INSTRUMENTS = new Set<DrumInstrumentId>([
   "glitchDrums",
   "festivalDrums",
 ]);
+
+const INSTRUMENT_GROUPS = [
+  {
+    id: "tonal",
+    name: "旋律与和声",
+    color: "#3867ff",
+    instruments: INSTRUMENTS.filter((item) => !DRUM_INSTRUMENTS.has(item.id as DrumInstrumentId)),
+  },
+  {
+    id: "drums",
+    name: "节奏与鼓组",
+    color: "#ff7338",
+    instruments: INSTRUMENTS.filter((item) => DRUM_INSTRUMENTS.has(item.id as DrumInstrumentId)),
+  },
+] as const;
 
 const SCALES: Record<ScaleId, ScaleDefinition> = {
   hirajoshi: { name: "E 平调子", root: 40, intervals: [0, 2, 3, 7, 8], group: "和风五声" },
@@ -2235,26 +2250,43 @@ export default function Home() {
             </header>
             <div className="instrument-scroll">
               <div className="instrument-list">
-                {INSTRUMENTS.map((item) => (
-                  <button
-                    type="button"
-                    key={item.id}
-                    className={`instrument-button ${instrument === item.id ? "is-active" : ""}`}
+                {INSTRUMENT_GROUPS.map((group) => (
+                  <section
+                    className="instrument-group"
+                    key={group.id}
                     style={{
-                      "--instrument-color": item.color,
-                      "--instrument-accent": item.accent,
+                      "--group-color": group.color,
                     } as CSSProperties}
-                    aria-pressed={instrument === item.id}
-                    onClick={() => {
-                      setInstrument(item.id);
-                      if (tool === "select" || tool === "erase" || tool === "pan") setTool("draw");
-                    }}
+                    aria-label={`${group.name}，${group.instruments.length} 种声音`}
                   >
-                    <span className="instrument-code">{item.code}</span>
-                    <span className={formClass(item.form)} aria-hidden="true" />
-                    <span className="instrument-copy"><strong>{item.name}</strong><small>{item.subtitle}</small></span>
-                    <span className="instrument-count">{instrumentCounts[item.id]}</span>
-                  </button>
+                    <div className="instrument-group-heading">
+                      <span>{group.name}</span>
+                      <small>{String(group.instruments.length).padStart(2, "0")}</small>
+                    </div>
+                    <div className="instrument-group-items">
+                      {group.instruments.map((item) => (
+                        <button
+                          type="button"
+                          key={item.id}
+                          className={`instrument-button ${instrument === item.id ? "is-active" : ""}`}
+                          style={{
+                            "--instrument-color": item.color,
+                            "--instrument-accent": item.accent,
+                          } as CSSProperties}
+                          aria-pressed={instrument === item.id}
+                          onClick={() => {
+                            setInstrument(item.id);
+                            if (tool === "select" || tool === "erase" || tool === "pan") setTool("draw");
+                          }}
+                        >
+                          <span className="instrument-code">{item.code}</span>
+                          <span className={formClass(item.form)} aria-hidden="true" />
+                          <span className="instrument-copy"><strong>{item.name}</strong><small>{item.subtitle}</small></span>
+                          <span className="instrument-count">{instrumentCounts[item.id]}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
                 ))}
               </div>
             </div>
@@ -2407,7 +2439,11 @@ export default function Home() {
               <label className="field-row">
                 <span>音色</span>
                 <select value={selectedShape.instrument} onChange={(event) => updateSelected({ instrument: event.target.value as InstrumentId })}>
-                  {INSTRUMENTS.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                  {INSTRUMENT_GROUPS.map((group) => (
+                    <optgroup key={group.id} label={group.name}>
+                      {group.instruments.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </optgroup>
+                  ))}
                 </select>
               </label>
               <label className="range-field">
