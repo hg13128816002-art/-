@@ -239,6 +239,10 @@ input::selection {
   gap: 7px;
 }
 
+.project-file-input {
+  display: none;
+}
+
 .save-state {
   color: var(--sun);
   font-size: 10px;

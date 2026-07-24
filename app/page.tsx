@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent as ReactChangeEvent,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -116,6 +117,25 @@ type StoredProject = {
   swing?: number;
 };
 
+type CompactShape = [
+  instrumentIndex: number,
+  startStep: number,
+  durationSteps: number,
+  y: number,
+  size: number,
+  pan: number,
+  rotation: number,
+];
+
+type CompactShareProject = {
+  v: 3;
+  n: CompactShape[];
+  b: number;
+  s: ScaleId;
+  t: string;
+  w: number;
+};
+
 type RhythmPatternId =
   | "fourOnFloor"
   | "twoStep"
@@ -186,6 +206,10 @@ const START_DELAY_SECONDS = 0.08;
 const PROJECT_DB = "synesthesia-canvas-v2";
 const PROJECT_STORE = "projects";
 const PROJECT_KEY = "current";
+const SHARE_LINK_PREFIX = "#p=";
+const LEGACY_SHARE_LINK_PREFIX = "#s=";
+const SHARE_FILE_HEADER = "SYNESTHESIA-CANVAS:3:";
+const SHARE_QUANTIZE = 10_000;
 
 const INSTRUMENTS: Instrument[] = [
   {
@@ -379,6 +403,163 @@ function makeId() {
     return crypto.randomUUID();
   }
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function bytesToBase64Url(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlToBytes(value: string) {
+  const padded = `${value.replace(/-/g, "+").replace(/_/g, "/")}${"=".repeat(
+    (4 - (value.length % 4)) % 4,
+  )}`;
+  return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
+}
+
+function bytesAsArrayBuffer(bytes: Uint8Array) {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+async function gzipBytes(bytes: Uint8Array) {
+  if (typeof CompressionStream === "undefined") return null;
+  const source = new Blob([bytesAsArrayBuffer(bytes)]).stream();
+  const compressed = source.pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(compressed).arrayBuffer());
+}
+
+async function gunzipBytes(bytes: Uint8Array) {
+  if (typeof DecompressionStream === "undefined") {
+    throw new Error("This browser cannot decompress shared projects");
+  }
+  const source = new Blob([bytesAsArrayBuffer(bytes)]).stream();
+  const decompressed = source.pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(decompressed).arrayBuffer());
+}
+
+function compactProject(project: StoredProject): CompactShareProject {
+  return {
+    v: 3,
+    b: Math.round(project.bpm),
+    s: project.scale,
+    t: project.title.slice(0, 36),
+    w: Math.round((project.swing ?? 0.56) * SHARE_QUANTIZE),
+    n: project.shapes.map((shape) => [
+      INSTRUMENTS.findIndex((instrument) => instrument.id === shape.instrument),
+      Math.round(shape.startStep),
+      Math.round(shape.durationSteps),
+      Math.round(shape.y * SHARE_QUANTIZE),
+      Math.round(shape.size * SHARE_QUANTIZE),
+      Math.round(shape.pan * SHARE_QUANTIZE),
+      Math.round(shape.rotation * SHARE_QUANTIZE),
+    ]),
+  };
+}
+
+function expandCompactProject(value: unknown): StoredProject | null {
+  if (!value || typeof value !== "object") return null;
+  const project = value as Partial<CompactShareProject>;
+  if (
+    project.v !== 3 ||
+    !Array.isArray(project.n) ||
+    !Number.isFinite(project.b) ||
+    !isScaleId(project.s) ||
+    typeof project.t !== "string" ||
+    !Number.isFinite(project.w)
+  ) {
+    return null;
+  }
+  const shapes = project.n
+    .map((note): SoundShape | null => {
+      if (
+        !Array.isArray(note) ||
+        note.length !== 7 ||
+        !note.every((part) => Number.isFinite(part))
+      ) {
+        return null;
+      }
+      const instrument = INSTRUMENTS[Math.round(note[0])];
+      if (!instrument) return null;
+      return normalizeShape({
+        id: makeId(),
+        instrument: instrument.id,
+        startStep: note[1],
+        durationSteps: note[2],
+        y: note[3] / SHARE_QUANTIZE,
+        size: note[4] / SHARE_QUANTIZE,
+        pan: note[5] / SHARE_QUANTIZE,
+        rotation: note[6] / SHARE_QUANTIZE,
+      });
+    })
+    .filter((shape): shape is SoundShape => Boolean(shape));
+  return {
+    version: 2,
+    shapes,
+    bpm: clamp(project.b as number, 90, 180),
+    scale: project.s,
+    title: project.t.slice(0, 36),
+    swing: clamp((project.w as number) / SHARE_QUANTIZE, 0.5, 0.66),
+  };
+}
+
+function normalizeStoredProject(value: unknown): StoredProject | null {
+  if (!value || typeof value !== "object") return null;
+  const project = value as Partial<StoredProject>;
+  if (
+    project.version !== 2 ||
+    !Array.isArray(project.shapes) ||
+    !Number.isFinite(project.bpm) ||
+    !isScaleId(project.scale) ||
+    typeof project.title !== "string"
+  ) {
+    return null;
+  }
+  return {
+    version: 2,
+    shapes: project.shapes
+      .map(normalizeShape)
+      .filter((shape): shape is SoundShape => Boolean(shape)),
+    bpm: clamp(project.bpm as number, 90, 180),
+    scale: project.scale,
+    title: project.title.slice(0, 36),
+    swing: typeof project.swing === "number" ? clamp(project.swing, 0.5, 0.66) : 0.56,
+  };
+}
+
+async function encodeShareProject(project: StoredProject) {
+  const plainBytes = new TextEncoder().encode(JSON.stringify(compactProject(project)));
+  const compressedBytes = await gzipBytes(plainBytes);
+  if (compressedBytes && compressedBytes.length < plainBytes.length) {
+    return `g${bytesToBase64Url(compressedBytes)}`;
+  }
+  return `j${bytesToBase64Url(plainBytes)}`;
+}
+
+async function decodeShareProject(encoded: string) {
+  const mode = encoded[0];
+  const payload = base64UrlToBytes(encoded.slice(1));
+  const bytes = mode === "g" ? await gunzipBytes(payload) : mode === "j" ? payload : null;
+  if (!bytes) return null;
+  return expandCompactProject(JSON.parse(new TextDecoder().decode(bytes)));
+}
+
+function decodeLegacyShareProject(encoded: string) {
+  return normalizeStoredProject(
+    JSON.parse(new TextDecoder().decode(base64UrlToBytes(encoded))),
+  );
+}
+
+function projectFileName(title: string) {
+  const safeTitle = title
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ")
+    .slice(0, 48);
+  return `${safeTitle || "通感画布作品"}.synesthesia`;
 }
 
 function hashString(value: string) {
@@ -1511,6 +1692,7 @@ export default function Home() {
   const restoredRef = useRef(false);
   const rhythmPanelRef = useRef<HTMLElement>(null);
   const rhythmTriggerRef = useRef<HTMLButtonElement>(null);
+  const projectFileInputRef = useRef<HTMLInputElement>(null);
 
   const [shapes, setShapes] = useState<SoundShape[]>([]);
   const [instrument, setInstrument] = useState<InstrumentId>("keys");
@@ -1986,21 +2168,20 @@ export default function Home() {
     queueMicrotask(async () => {
       if (!active) return;
       try {
-        const encoded = window.location.hash.startsWith("#s=") ? window.location.hash.slice(3) : "";
-        const padded = encoded
-          ? `${encoded.replace(/-/g, "+").replace(/_/g, "/")}${"=".repeat((4 - (encoded.length % 4)) % 4)}`
+        const compactEncoded = window.location.hash.startsWith(SHARE_LINK_PREFIX)
+          ? window.location.hash.slice(SHARE_LINK_PREFIX.length)
           : "";
-        const project = encoded
-          ? JSON.parse(
-              new TextDecoder().decode(
-                Uint8Array.from(atob(padded), (char) => char.charCodeAt(0)),
-              ),
-            ) as Partial<StoredProject>
-          : await loadStoredProject();
-        if (project?.version === 2 && Array.isArray(project.shapes)) {
-          const safeShapes = project.shapes
-            .map(normalizeShape)
-            .filter((shape): shape is SoundShape => Boolean(shape));
+        const legacyEncoded = window.location.hash.startsWith(LEGACY_SHARE_LINK_PREFIX)
+          ? window.location.hash.slice(LEGACY_SHARE_LINK_PREFIX.length)
+          : "";
+        const fromShare = Boolean(compactEncoded || legacyEncoded);
+        const project = compactEncoded
+          ? await decodeShareProject(compactEncoded)
+          : legacyEncoded
+            ? decodeLegacyShareProject(legacyEncoded)
+            : normalizeStoredProject(await loadStoredProject());
+        if (project) {
+          const safeShapes = project.shapes;
           shapesRef.current = safeShapes;
           timelineShapesRef.current = [...safeShapes].sort(
             (left, right) => left.startStep - right.startStep,
@@ -2010,9 +2191,9 @@ export default function Home() {
           if (isScaleId(project.scale)) setScale(project.scale);
           if (typeof project.title === "string") setProjectTitle(project.title.slice(0, 36));
           if (typeof project.swing === "number") setSwing(clamp(project.swing, 0.5, 0.66));
-          if (encoded) showToast("共享作品已载入，可以直接 Remix");
-        } else if (project) {
-          showToast("已启用新版无限画布；旧练习稿未迁移");
+          if (fromShare) showToast("共享作品已载入，可以直接 Remix");
+        } else if (fromShare) {
+          throw new Error("Invalid shared project");
         }
         localStorage.removeItem("synesthesia-canvas-project");
       } catch {
@@ -2420,29 +2601,86 @@ export default function Home() {
   };
 
   const shareProject = async () => {
-    const payload = JSON.stringify({
+    const project: StoredProject = {
       version: 2,
       shapes: shapesRef.current,
       bpm,
       scale,
       title: projectTitle,
       swing,
-    });
-    if (payload.length > 900_000) {
-      showToast("大型作品已完整保存在本机；当前作品过大，不适合放进分享链接");
-      return;
-    }
-    const bytes = new TextEncoder().encode(payload);
-    let binary = "";
-    bytes.forEach((byte) => (binary += String.fromCharCode(byte)));
-    const encoded = btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    const url = `${window.location.origin}${window.location.pathname}#s=${encoded}`;
+    };
+    showToast("正在打包工程文件…");
     try {
-      await navigator.clipboard.writeText(url);
-      window.history.replaceState(null, "", `#s=${encoded}`);
-      showToast("作品链接已复制；打开即可继续 Remix");
+      const encoded = await encodeShareProject(project);
+      const file = new File(
+        [`${SHARE_FILE_HEADER}${encoded}`],
+        projectFileName(projectTitle),
+        { type: "application/x-synesthesia-canvas;charset=utf-8" },
+      );
+      if (
+        typeof navigator.share === "function" &&
+        typeof navigator.canShare === "function" &&
+        navigator.canShare({ files: [file] })
+      ) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: projectTitle,
+            text: "用通感画布打开这个工程，即可继续试听和 Remix。",
+          });
+          showToast("工程文件已分享；接收方可用「导入工程」打开");
+          return;
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") {
+            showToast("已取消分享");
+            return;
+          }
+        }
+      }
+      const fileUrl = URL.createObjectURL(file);
+      const anchor = document.createElement("a");
+      anchor.href = fileUrl;
+      anchor.download = file.name;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(fileUrl), 1_000);
+      showToast("工程文件已下载；发送给朋友后可用「导入工程」打开");
     } catch {
-      window.prompt("复制这个作品链接", url);
+      showToast("分享生成失败，请稍后重试");
+    }
+  };
+
+  const importProjectFile = async (event: ReactChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const content = await file.text();
+      const encoded = content.startsWith(SHARE_FILE_HEADER)
+        ? content.slice(SHARE_FILE_HEADER.length).trim()
+        : "";
+      const project = encoded
+        ? await decodeShareProject(encoded)
+        : normalizeStoredProject(JSON.parse(content));
+      if (!project) throw new Error("Invalid project file");
+      stopPlayback();
+      historyRef.current = [];
+      futureRef.current = [];
+      syncStacks();
+      setSelectedId(null);
+      setShapesDirect(project.shapes);
+      setBpm(project.bpm);
+      setScale(project.scale);
+      setProjectTitle(project.title);
+      setSwing(project.swing ?? 0.56);
+      navigateToStep(0);
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${window.location.search}`,
+      );
+      showToast(`已导入「${project.title}」· ${project.shapes.length} 个声音`);
+    } catch {
+      showToast("这个工程文件无法读取，请确认它由通感画布导出");
     }
   };
 
@@ -2717,8 +2955,24 @@ export default function Home() {
 
         <div className="header-actions">
           <span className={`save-state ${saved ? "is-saved" : ""}`}>{saved ? "已保存" : "保存中…"}</span>
+          <input
+            ref={projectFileInputRef}
+            className="project-file-input"
+            type="file"
+            accept=".synesthesia,application/x-synesthesia-canvas,application/json"
+            onChange={(event) => void importProjectFile(event)}
+            tabIndex={-1}
+            aria-hidden="true"
+          />
+          <button
+            type="button"
+            className="button button--quiet"
+            onClick={() => projectFileInputRef.current?.click()}
+          >
+            导入工程
+          </button>
           <button type="button" className="button button--quiet" onClick={() => void shareProject()}>
-            分享
+            分享工程
           </button>
           <button
             type="button"

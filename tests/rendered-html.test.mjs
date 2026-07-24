@@ -56,6 +56,8 @@ test("server-renders the finished Synesthesia Canvas shell", async () => {
   assert.match(html, /段落长度/);
   assert.match(html, /复杂度/);
   assert.match(html, /Swing/);
+  assert.match(html, /导入工程/);
+  assert.match(html, /分享工程/);
   assert.match(html, /icon\.svg/);
 
   const drumNames = ["活力鼓组", "和祭太鼓", "像素鼓机", "故障切片鼓", "霓虹祭典鼓"];
@@ -134,13 +136,25 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.doesNotMatch(page, /MAX_SHAPES/);
   assert.match(wav, /RF64/);
   assert.match(wav, /showSaveFilePicker/);
-  assert.match(page, /navigator\.clipboard/);
+  assert.doesNotMatch(page, /navigator\.clipboard|clipboard\.writeText|window\.prompt/);
+  assert.match(page, /CompressionStream\("gzip"\)/);
+  assert.match(page, /DecompressionStream\("gzip"\)/);
+  assert.match(page, /SHARE_LINK_PREFIX = "#p="/);
+  assert.match(page, /LEGACY_SHARE_LINK_PREFIX = "#s="/);
+  assert.doesNotMatch(page, /SHARE_LINK_MAX_LENGTH/);
+  assert.match(page, /SHARE_FILE_HEADER = "SYNESTHESIA-CANVAS:3:"/);
+  assert.match(page, /\.synesthesia/);
+  assert.match(page, /navigator\.canShare\(\{ files: \[file\] \}\)/);
+  assert.match(page, /accept="\.synesthesia,application\/x-synesthesia-canvas,application\/json"/);
+  assert.match(page, /id: makeId\(\)/);
+  assert.doesNotMatch(page, /payload\.length > 900_000/);
   assert.match(page, /onPointerDown/);
   assert.match(page, /E 平调子/);
   assert.match(css, /timeline-navigation/);
   assert.match(css, /\.timeline-zoom input\[type="range"\]/);
   assert.match(css, /cursor: ew-resize/);
   assert.match(css, /\.canvas-frame[\s\S]*?overscroll-behavior: none/);
+  assert.match(css, /\.project-file-input[\s\S]*?display: none/);
   assert.match(css, /tool-pan/);
   assert.match(css, /rail-section--voices/);
   assert.match(css, /rail-section--tools/);
