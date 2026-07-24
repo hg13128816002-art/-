@@ -579,7 +579,7 @@ input::selection {
   gap: 7px;
 }
 
-.tool-grid .tool-button:nth-child(5) {
+.tool-grid .tool-button:last-child {
   grid-column: 1 / -1;
 }
 
@@ -1130,6 +1130,7 @@ input::selection {
 
 .canvas-frame.tool-select canvas { cursor: grab; }
 .canvas-frame.tool-select canvas:active { cursor: grabbing; }
+.canvas-frame.tool-lasso canvas { cursor: crosshair; }
 .canvas-frame.tool-draw canvas { cursor: crosshair; }
 .canvas-frame.tool-stamp canvas { cursor: cell; }
 .canvas-frame.tool-erase canvas { cursor: not-allowed; }
@@ -1161,6 +1162,34 @@ input::selection {
   border: 2px solid #ffffff;
   border-radius: 50%;
   background: var(--coral);
+}
+
+.lasso-selection {
+  position: absolute;
+  z-index: 5;
+  min-width: 3px;
+  min-height: 3px;
+  border-radius: 12px;
+  background: rgba(56, 103, 255, 0.22);
+  box-shadow: inset 0 0 0 2px rgba(56, 103, 255, 0.86);
+  pointer-events: none;
+}
+
+.lasso-selection span {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: max-content;
+  max-width: 180px;
+  padding: 5px 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pitch-labels {
@@ -1422,6 +1451,63 @@ input::selection {
 
 .selected-editor {
   padding-top: 13px;
+}
+
+.multi-selection-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 18px;
+  border-radius: 22px;
+  background: var(--sun);
+  color: var(--text);
+}
+
+.multi-selection-card > span {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: var(--primary);
+  color: #ffffff;
+  font-size: 19px;
+}
+
+.multi-selection-card strong {
+  font-size: 13px;
+}
+
+.multi-selection-card p {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.multi-selection-card > div {
+  display: grid;
+  gap: 7px;
+}
+
+.multi-selection-card button {
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.multi-selection-card button:hover {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.multi-selection-card button.is-danger {
+  background: var(--danger);
+  color: #ffffff;
 }
 
 .selected-identity {
@@ -2033,10 +2119,10 @@ input[type="range"] {
   }
 
   .tool-grid {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 
-  .tool-grid .tool-button:nth-child(5) {
+  .tool-grid .tool-button:last-child {
     grid-column: auto;
   }
 
@@ -2553,11 +2639,12 @@ input[type="range"] {
   color: var(--text);
 }
 
-.tool-button:nth-child(1).is-active { background: var(--violet); color: #ffffff; }
-.tool-button:nth-child(2).is-active { background: var(--primary); color: #ffffff; }
-.tool-button:nth-child(3).is-active { background: #ff4f9a; color: var(--text); }
-.tool-button:nth-child(4).is-active { background: #ff7338; color: var(--text); }
-.tool-button:nth-child(5).is-active { background: var(--sky); color: var(--text); }
+.tool-button--select.is-active { background: var(--violet); color: #ffffff; }
+.tool-button--lasso.is-active { background: var(--sun); color: var(--text); }
+.tool-button--draw.is-active { background: var(--primary); color: #ffffff; }
+.tool-button--stamp.is-active { background: #ff4f9a; color: var(--text); }
+.tool-button--erase.is-active { background: #ff7338; color: var(--text); }
+.tool-button--pan.is-active { background: var(--sky); color: var(--text); }
 
 .tool-button.is-active > span {
   color: inherit;
@@ -2961,7 +3048,7 @@ input[type="range"] {
     grid-template-columns: repeat(auto-fit, minmax(54px, 1fr));
   }
 
-  .tool-scroll .tool-grid .tool-button:nth-child(5) {
+  .tool-scroll .tool-grid .tool-button:last-child {
     grid-column: auto;
   }
 

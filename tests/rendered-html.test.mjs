@@ -37,6 +37,7 @@ test("server-renders the finished Synesthesia Canvas shell", async () => {
   assert.match(html, /13(?:<!-- -->)? 种/);
   assert.match(html, /instrument-scroll/);
   assert.match(html, /tool-scroll/);
+  assert.match(html, /同音色套索/);
   assert.match(html, /播放作品/);
   assert.match(html, /音阶 · .*13.* 种/);
   assert.match(html, /D 阴音阶 · 樱花/);
@@ -142,6 +143,13 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(page, /gestureTime - lastWheelZoomAtRef\.current >= 180/);
   assert.match(page, /horizontalGesture/);
   assert.match(page, /canvasPointerGuardUntilRef/);
+  assert.match(page, /kind: "lasso"/);
+  assert.match(page, /selectShapesInLasso/);
+  assert.match(page, /shape\.instrument !== targetInstrument/);
+  assert.match(page, /copiedShapesRef/);
+  assert.match(page, /pasteSelectionAtPlayhead/);
+  assert.match(page, /playheadStepRef\.current \+ shape\.startStep - firstStep/);
+  assert.match(page, /event\.key\.toLowerCase\(\) === "c"/);
   assert.match(page, /cancelCanvasGestureForScroll/);
   assert.match(page, /event\.buttons & 1/);
   assert.match(page, /gestureTime \+ 240/);
@@ -198,6 +206,8 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(css, /\.canvas-frame[\s\S]*?overscroll-behavior: none/);
   assert.match(css, /\.project-file-input[\s\S]*?display: none/);
   assert.match(css, /tool-pan/);
+  assert.match(css, /tool-lasso/);
+  assert.match(css, /\.lasso-selection/);
   assert.match(css, /rail-section--voices/);
   assert.match(css, /rail-section--tools/);
   assert.match(css, /instrument-group-heading/);

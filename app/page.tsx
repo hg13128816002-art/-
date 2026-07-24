@@ -30,7 +30,7 @@ type DrumInstrumentId =
   | "festivalDrums";
 type InstrumentId = TonalInstrumentId | DrumInstrumentId;
 type DrumZone = "low" | "mid" | "high";
-type ToolId = "select" | "draw" | "stamp" | "erase" | "pan";
+type ToolId = "select" | "lasso" | "draw" | "stamp" | "erase" | "pan";
 type ShapeForm =
   | "triangle"
   | "ring"
@@ -213,6 +213,15 @@ type Interaction =
       pointerId: number;
       startClientX: number;
       startViewStep: number;
+    }
+  | {
+      kind: "lasso";
+      pointerId: number;
+      startStep: number;
+      startY: number;
+      currentStep: number;
+      currentY: number;
+      instrument: InstrumentId;
     };
 
 const EPSILON = 0.0001;
@@ -413,6 +422,7 @@ const SCALE_ENTRIES = Object.entries(SCALES) as [ScaleId, ScaleDefinition][];
 
 const TOOL_ITEMS: { id: ToolId; key: string; glyph: string; label: string }[] = [
   { id: "select", key: "V", glyph: "⌖", label: "选择 / 移动" },
+  { id: "lasso", key: "L", glyph: "▣", label: "同音色套索" },
   { id: "draw", key: "B", glyph: "∿", label: "声音画笔" },
   { id: "stamp", key: "S", glyph: "◇", label: "图形印章" },
   { id: "erase", key: "E", glyph: "⌫", label: "擦除" },
@@ -1754,11 +1764,19 @@ export default function Home() {
   const rhythmPanelRef = useRef<HTMLElement>(null);
   const rhythmTriggerRef = useRef<HTMLButtonElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
+  const copiedShapesRef = useRef<SoundShape[]>([]);
 
   const [shapes, setShapes] = useState<SoundShape[]>([]);
   const [instrument, setInstrument] = useState<InstrumentId>("keys");
   const [tool, setTool] = useState<ToolId>("draw");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [lassoRect, setLassoRect] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
   const [historyCount, setHistoryCount] = useState(0);
   const [futureCount, setFutureCount] = useState(0);
   const [bpm, setBpm] = useState(132);
@@ -1791,6 +1809,7 @@ export default function Home() {
     () => shapes.find((shape) => shape.id === selectedId) ?? null,
     [selectedId, shapes],
   );
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const selectedRhythmDefinition =
     RHYTHM_PATTERNS.find((pattern) => pattern.id === rhythmPattern) ?? RHYTHM_PATTERNS[0];
 
@@ -1846,6 +1865,7 @@ export default function Home() {
     futureRef.current = [shapesRef.current, ...futureRef.current].slice(0, 40);
     setShapesDirect(previous);
     setSelectedId(null);
+    setSelectedIds([]);
     syncStacks();
     showToast("已撤销上一步");
   }, [setShapesDirect, showToast, syncStacks]);
@@ -1857,6 +1877,7 @@ export default function Home() {
     historyRef.current = [...historyRef.current.slice(-39), shapesRef.current];
     setShapesDirect(next);
     setSelectedId(null);
+    setSelectedIds([]);
     syncStacks();
     showToast("已重做");
   }, [setShapesDirect, showToast, syncStacks]);
@@ -2195,7 +2216,7 @@ export default function Home() {
       const minimumShapeWidth = viewBars <= 4 ? 12 : viewBars <= 16 ? 7 : 3;
       const shapeWidth = Math.max(minimumShapeWidth, (shape.durationSteps / viewSteps) * width);
       const shapeHeight = Math.max(14, shape.size * height);
-      const selected = shape.id === selectedId;
+      const selected = shape.id === selectedId || selectedIdSet.has(shape.id);
       context.save();
       context.translate(x, y);
       context.rotate(shape.rotation);
@@ -2299,7 +2320,7 @@ export default function Home() {
       }
       context.restore();
     }
-  }, [selectedId, viewBars, viewStartStep, viewSteps]);
+  }, [selectedId, selectedIdSet, viewBars, viewStartStep, viewSteps]);
 
   useEffect(() => {
     drawCanvas();
@@ -2507,6 +2528,34 @@ export default function Home() {
     return candidates.at(-1);
   };
 
+  const selectShapesInLasso = (
+    startStep: number,
+    startY: number,
+    currentStep: number,
+    currentY: number,
+    targetInstrument: InstrumentId,
+  ) => {
+    const left = Math.min(startStep, currentStep);
+    const right = Math.max(startStep, currentStep);
+    const top = Math.min(startY, currentY);
+    const bottom = Math.max(startY, currentY);
+    const matches = shapesRef.current
+      .filter((shape) => {
+        if (shape.instrument !== targetInstrument) return false;
+        const verticalRadius = Math.max(0.025, shape.size * 0.5);
+        return (
+          shape.startStep + shape.durationSteps >= left &&
+          shape.startStep <= right &&
+          shape.y + verticalRadius >= top &&
+          shape.y - verticalRadius <= bottom
+        );
+      })
+      .map((shape) => shape.id);
+    setSelectedIds(matches);
+    setSelectedId(matches.length === 1 ? matches[0] : null);
+    return matches;
+  };
+
   const addDrawShape = (step: number, y: number) => {
     const config = getInstrument(instrument);
     const next = [
@@ -2548,6 +2597,7 @@ export default function Home() {
     if (tool === "select") {
       const hit = findShapeAt(point.step, point.y);
       setSelectedId(hit?.id ?? null);
+      setSelectedIds(hit ? [hit.id] : []);
       if (hit) {
         gestureSnapshotRef.current = shapesRef.current;
         interactionRef.current = {
@@ -2560,6 +2610,26 @@ export default function Home() {
       }
       return;
     }
+    if (tool === "lasso") {
+      setSelectedId(null);
+      setSelectedIds([]);
+      setLassoRect({
+        left: point.screenX,
+        top: point.y,
+        width: 0,
+        height: 0,
+      });
+      interactionRef.current = {
+        kind: "lasso",
+        pointerId: event.pointerId,
+        startStep: point.step,
+        startY: point.y,
+        currentStep: point.step,
+        currentY: point.y,
+        instrument,
+      };
+      return;
+    }
     gestureSnapshotRef.current = shapesRef.current;
     if (tool === "draw") {
       interactionRef.current = { kind: "draw", pointerId: event.pointerId, lastStep: point.step, lastY: point.y };
@@ -2570,6 +2640,7 @@ export default function Home() {
       if (hit) {
         setShapesDirect(shapesRef.current.filter((shape) => shape.id !== hit.id));
         if (selectedId === hit.id) setSelectedId(null);
+        setSelectedIds((current) => current.filter((id) => id !== hit.id));
         gestureChangedRef.current = true;
       }
     } else {
@@ -2596,6 +2667,7 @@ export default function Home() {
         },
       ]);
       setSelectedId(id);
+      setSelectedIds([id]);
       gestureChangedRef.current = true;
     }
   };
@@ -2607,6 +2679,11 @@ export default function Home() {
       performance.now() < canvasPointerGuardUntilRef.current ||
       (event.pointerType === "mouse" && (event.buttons & 1) === 0)
     ) {
+      if (interaction.kind === "lasso") {
+        setSelectedId(null);
+        setSelectedIds([]);
+        setLassoRect(null);
+      }
       const snapshot = gestureSnapshotRef.current;
       if (snapshot && gestureChangedRef.current) {
         setShapesDirect(snapshot);
@@ -2625,6 +2702,29 @@ export default function Home() {
       const deltaSteps =
         (event.clientX - interaction.startClientX) / bounds.width * viewStepsRef.current;
       navigateToStep(interaction.startViewStep - deltaSteps);
+    } else if (interaction.kind === "lasso") {
+      const leftStep = Math.min(interaction.startStep, point.step);
+      const rightStep = Math.max(interaction.startStep, point.step);
+      const top = Math.min(interaction.startY, point.y);
+      const bottom = Math.max(interaction.startY, point.y);
+      setLassoRect({
+        left: clamp((leftStep - viewStartStepRef.current) / viewStepsRef.current),
+        top,
+        width: clamp((rightStep - leftStep) / viewStepsRef.current),
+        height: bottom - top,
+      });
+      selectShapesInLasso(
+        interaction.startStep,
+        interaction.startY,
+        point.step,
+        point.y,
+        interaction.instrument,
+      );
+      interactionRef.current = {
+        ...interaction,
+        currentStep: point.step,
+        currentY: point.y,
+      };
     } else if (interaction.kind === "move") {
       setShapesDirect(
         shapesRef.current.map((shape) =>
@@ -2666,11 +2766,31 @@ export default function Home() {
   };
 
   const onCanvasPointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (interactionRef.current?.pointerId !== event.pointerId) return;
+    const interaction = interactionRef.current;
+    if (interaction?.pointerId !== event.pointerId) return;
+    if (interaction.kind === "lasso") {
+      const matches = selectShapesInLasso(
+        interaction.startStep,
+        interaction.startY,
+        interaction.currentStep,
+        interaction.currentY,
+        interaction.instrument,
+      );
+      setLassoRect(null);
+      showToast(
+        matches.length
+          ? `已框选 ${matches.length} 个${getInstrument(interaction.instrument).name}声音`
+          : `框选范围内没有${getInstrument(interaction.instrument).name}声音`,
+      );
+    }
     finishGesture();
   };
 
   const cancelCanvasGestureForScroll = useCallback(() => {
+    if (interactionRef.current?.kind === "lasso") {
+      setSelectedId(null);
+      setSelectedIds([]);
+    }
     const snapshot = gestureSnapshotRef.current;
     if (snapshot && gestureChangedRef.current) {
       setShapesDirect(snapshot);
@@ -2681,6 +2801,7 @@ export default function Home() {
     interactionRef.current = null;
     gestureSnapshotRef.current = null;
     gestureChangedRef.current = false;
+    setLassoRect(null);
   }, [setShapesDirect]);
 
   const onCanvasWheel = useCallback((event: WheelEvent) => {
@@ -2896,11 +3017,45 @@ export default function Home() {
   };
 
   const deleteSelected = useCallback(() => {
-    if (!selectedId) return;
-    commitShapes(shapesRef.current.filter((shape) => shape.id !== selectedId));
+    const ids = new Set(selectedIds.length ? selectedIds : selectedId ? [selectedId] : []);
+    if (!ids.size) return;
+    commitShapes(shapesRef.current.filter((shape) => !ids.has(shape.id)));
     setSelectedId(null);
-    showToast("声音事件已删除");
-  }, [commitShapes, selectedId, showToast]);
+    setSelectedIds([]);
+    showToast(`已删除 ${ids.size} 个声音事件`);
+  }, [commitShapes, selectedId, selectedIds, showToast]);
+
+  const copySelection = useCallback(() => {
+    const ids = new Set(selectedIds.length ? selectedIds : selectedId ? [selectedId] : []);
+    if (!ids.size) {
+      showToast("请先用套索或选择工具选中声音");
+      return;
+    }
+    copiedShapesRef.current = shapesRef.current
+      .filter((shape) => ids.has(shape.id))
+      .sort((left, right) => left.startStep - right.startStep)
+      .map((shape) => ({ ...shape }));
+    showToast(`已复制 ${copiedShapesRef.current.length} 个声音事件`);
+  }, [selectedId, selectedIds, showToast]);
+
+  const pasteSelectionAtPlayhead = useCallback(() => {
+    const copied = copiedShapesRef.current;
+    if (!copied.length) {
+      showToast("还没有可粘贴的声音片段");
+      return;
+    }
+    const firstStep = Math.min(...copied.map((shape) => shape.startStep));
+    const pasted = copied.map((shape) => ({
+      ...shape,
+      id: makeId(),
+      startStep: playheadStepRef.current + shape.startStep - firstStep,
+    }));
+    commitShapes([...shapesRef.current, ...pasted]);
+    const pastedIds = pasted.map((shape) => shape.id);
+    setSelectedIds(pastedIds);
+    setSelectedId(pastedIds.length === 1 ? pastedIds[0] : null);
+    showToast(`已从播放头粘贴 ${pasted.length} 个声音事件`);
+  }, [commitShapes, showToast]);
 
   const clearCanvas = () => {
     if (!shapesRef.current.length) return;
@@ -2915,6 +3070,7 @@ export default function Home() {
     commitShapes([]);
     updateLoopRange(0, DEFAULT_PROJECT_STEPS, false);
     setSelectedId(null);
+    setSelectedIds([]);
     setClearArmed(false);
     showToast("画布已清空");
   };
@@ -2925,6 +3081,7 @@ export default function Home() {
     commitShapes(demoShapes);
     updateLoopRange(0, projectEndStep(demoShapes), false);
     setSelectedId(null);
+    setSelectedIds([]);
     setBpm(DEMO_PROJECT.bpm);
     setScale(DEMO_PROJECT.scale);
     setSwing(DEMO_PROJECT.swing);
@@ -2980,6 +3137,7 @@ export default function Home() {
     if (playing) stopPlayback();
     commitShapes([...shapesRef.current, ...inserted]);
     setSelectedId(null);
+    setSelectedIds([]);
     navigateToStep(startStep);
     closeRhythmPanel();
     showToast(
@@ -3057,6 +3215,7 @@ export default function Home() {
       futureRef.current = [];
       syncStacks();
       setSelectedId(null);
+      setSelectedIds([]);
       setShapesDirect(project.shapes);
       setBpm(project.bpm);
       setScale(project.scale);
@@ -3219,7 +3378,18 @@ export default function Home() {
         else undo();
         return;
       }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c") {
+        event.preventDefault();
+        copySelection();
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "v") {
+        event.preventDefault();
+        pasteSelectionAtPlayhead();
+        return;
+      }
       if (event.key.toLowerCase() === "v") setTool("select");
+      else if (event.key.toLowerCase() === "l") setTool("lasso");
       else if (event.key.toLowerCase() === "b") setTool("draw");
       else if (event.key.toLowerCase() === "s") setTool("stamp");
       else if (event.key.toLowerCase() === "e") setTool("erase");
@@ -3244,7 +3414,17 @@ export default function Home() {
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
     };
-  }, [deleteSelected, navigateToStep, play, redo, stopPlayback, undo, zoomTimeline]);
+  }, [
+    copySelection,
+    deleteSelected,
+    navigateToStep,
+    pasteSelectionAtPlayhead,
+    play,
+    redo,
+    stopPlayback,
+    undo,
+    zoomTimeline,
+  ]);
 
   const instrumentCounts = useMemo(
     () =>
@@ -3471,7 +3651,7 @@ export default function Home() {
                   <button
                     type="button"
                     key={item.id}
-                    className={`tool-button ${tool === item.id ? "is-active" : ""}`}
+                    className={`tool-button tool-button--${item.id} ${tool === item.id ? "is-active" : ""}`}
                     aria-pressed={tool === item.id}
                     title={`${item.label} (${item.key})`}
                     onClick={() => setTool(item.id)}
@@ -3838,6 +4018,20 @@ export default function Home() {
             <div className={`playhead ${playheadVisible ? "is-visible" : ""}`} style={{ left: `${playheadLeft}%` }} aria-hidden="true">
               <span />
             </div>
+            {lassoRect && (
+              <div
+                className="lasso-selection"
+                style={{
+                  left: `${lassoRect.left * 100}%`,
+                  top: `${lassoRect.top * 100}%`,
+                  width: `${lassoRect.width * 100}%`,
+                  height: `${lassoRect.height * 100}%`,
+                }}
+                aria-hidden="true"
+              >
+                <span>仅选择 · {getInstrument(instrument).name}</span>
+              </div>
+            )}
             <div className="pitch-labels" aria-hidden="true"><span>高音</span><span>中音</span><span>低音</span></div>
             {!shapes.length && (
               <div className="empty-state">
@@ -3858,6 +4052,7 @@ export default function Home() {
             {tool === "draw" && "拖动画出一串量化音符 · B"}
             {tool === "stamp" && "拖拽印章：横向长度控制音长，纵向距离控制力度 · S"}
             {tool === "select" && "拖动声音事件改变时间与音高，右侧可精确编辑 · V"}
+            {tool === "lasso" && `框选当前音色「${getInstrument(instrument).name}」· Ctrl/Cmd+C 复制 · Ctrl/Cmd+V 从播放头粘贴 · L`}
             {tool === "erase" && "划过声音事件即可擦除 · E"}
             {tool === "pan" && "拖动画布前往任意时间；触控板横向滑动，鼠标滚轮也可浏览 · H"}
             <span>拖动播放头定位 · SPACE 播放 / 暂停 · ENTER 停止并返回开头</span>
@@ -3866,8 +4061,11 @@ export default function Home() {
 
         <aside className="inspector" aria-label="声音事件检查器">
           <div className="panel-heading">
-            <div><p className="eyebrow">声音设置</p><h2>{selectedShape ? "调整这个声音" : "作品概览"}</h2></div>
-            <span>{selectedShape ? "已选择" : "全部"}</span>
+            <div>
+              <p className="eyebrow">声音设置</p>
+              <h2>{selectedShape ? "调整这个声音" : selectedIds.length ? "批量选择" : "作品概览"}</h2>
+            </div>
+            <span>{selectedShape ? "已选择" : selectedIds.length ? `${selectedIds.length} 个` : "全部"}</span>
           </div>
 
           {selectedShape ? (
@@ -3924,6 +4122,17 @@ export default function Home() {
               </div>
               <button type="button" className="delete-event" onClick={deleteSelected}>删除这个声音事件</button>
             </div>
+          ) : selectedIds.length ? (
+            <div className="multi-selection-card">
+              <span aria-hidden="true">▣</span>
+              <strong>已选择 {selectedIds.length} 个声音事件</strong>
+              <p>复制会保留片段内部的节奏、音高、力度与声像；粘贴时最早的声音将对齐播放头。</p>
+              <div>
+                <button type="button" onClick={copySelection}>Ctrl/Cmd+C · 复制</button>
+                <button type="button" onClick={pasteSelectionAtPlayhead}>Ctrl/Cmd+V · 从播放头粘贴</button>
+                <button type="button" className="is-danger" onClick={deleteSelected}>删除所选</button>
+              </div>
+            </div>
           ) : (
             <>
               <div className="dna-number"><strong>{shapes.length}</strong><span>个声音 · 不设上限</span></div>
@@ -3954,7 +4163,7 @@ export default function Home() {
             <ol>
               {eventPreview.map((shape) => (
                 <li key={shape.id}>
-                  <button type="button" onClick={() => { setSelectedId(shape.id); setTool("select"); navigateToStep(Math.floor(shape.startStep / viewSteps) * viewSteps); }}>
+                  <button type="button" onClick={() => { setSelectedId(shape.id); setSelectedIds([shape.id]); setTool("select"); navigateToStep(Math.floor(shape.startStep / viewSteps) * viewSteps); }}>
                     {getInstrument(shape.instrument).subtitle}，{shapePitchLabel(shape, scale)}，第 {(shape.startStep / STEPS_PER_BEAT + 1).toFixed(2)} 拍，力度 {Math.round(eventVelocity(shape) * 100)}
                   </button>
                 </li>
