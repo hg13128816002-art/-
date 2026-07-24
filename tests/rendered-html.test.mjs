@@ -59,7 +59,7 @@ test("server-renders the finished Synesthesia Canvas shell", async () => {
   assert.match(html, /导入工程/);
   assert.match(html, /分享工程/);
   assert.match(html, /片段循环/);
-  assert.match(html, /点击创建 · 拖动移动 · 两端调整/);
+  assert.match(html, /循环关闭 · 可先调整范围/);
   assert.match(html, /icon\.svg/);
 
   const drumNames = ["活力鼓组", "和祭太鼓", "像素鼓机", "故障切片鼓", "霓虹祭典鼓"];
@@ -113,6 +113,11 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.doesNotMatch(page, /\bvocal\b|泡沫人声/);
   assert.match(page, /setInterval\(pump/);
   assert.match(page, /const startPlayback = useCallback/);
+  assert.match(page, /const loopRef = useRef\(false\)/);
+  assert.match(page, /const \[loop, setLoop\] = useState\(false\)/);
+  assert.match(page, /project\.loop === true/);
+  assert.match(page, /requestedStep >= selectedRange\.startStep/);
+  assert.match(page, /requestedStep < selectedRange\.endStep/);
   assert.match(page, /rangeStartSeconds/);
   assert.match(page, /startOffsetSeconds/);
   assert.match(page, /timelineDragRef/);
@@ -143,6 +148,9 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
     page.indexOf('window.addEventListener("keydown", onKeyDown, true)'),
   );
   assert.ok(keyboardHandler.indexOf('event.code === "Space"') < keyboardHandler.indexOf("event.target"));
+  assert.ok(keyboardHandler.indexOf('event.key === "Enter"') < keyboardHandler.indexOf("event.target"));
+  assert.match(keyboardHandler, /stopPlayback\(\)/);
+  assert.match(keyboardHandler, /navigateToStep\(0\)/);
   assert.doesNotMatch(page, /timeline-zoom-(?:compress|stretch|fit)/);
   assert.doesNotMatch(page, /\bVIEW_STEPS\b/);
   assert.match(page, /indexedDB\.open/);

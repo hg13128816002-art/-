@@ -955,7 +955,7 @@ input::selection {
   min-width: 4px;
   overflow: visible;
   border-radius: 8px;
-  background: var(--sun);
+  background: #d9d9e2;
   color: var(--text);
   cursor: grab;
   opacity: 0.58;
@@ -963,6 +963,7 @@ input::selection {
 }
 
 .cycle-ruler.is-active .cycle-range {
+  background: var(--sun);
   opacity: 1;
 }
 

@@ -473,7 +473,7 @@ function compactProject(project: StoredProject): CompactShareProject {
     s: project.scale,
     t: project.title.slice(0, 36),
     w: Math.round((project.swing ?? 0.56) * SHARE_QUANTIZE),
-    l: project.loop === false ? 0 : 1,
+    l: project.loop === true ? 1 : 0,
     r:
       Number.isFinite(project.loopStartStep) && Number.isFinite(project.loopEndStep)
         ? [
@@ -539,7 +539,7 @@ function expandCompactProject(value: unknown): StoredProject | null {
     scale: project.s,
     title: project.t.slice(0, 36),
     swing: clamp((project.w as number) / SHARE_QUANTIZE, 0.5, 0.66),
-    loop: project.l !== 0,
+    loop: project.l === 1,
     loopStartStep:
       Array.isArray(project.r) && Number.isFinite(project.r[0])
         ? Math.max(0, Math.round(project.r[0]))
@@ -572,7 +572,7 @@ function normalizeStoredProject(value: unknown): StoredProject | null {
     scale: project.scale,
     title: project.title.slice(0, 36),
     swing: typeof project.swing === "number" ? clamp(project.swing, 0.5, 0.66) : 0.56,
-    loop: project.loop !== false,
+    loop: project.loop === true,
     loopStartStep:
       typeof project.loopStartStep === "number"
         ? Math.max(0, Math.round(project.loopStartStep))
@@ -1736,7 +1736,7 @@ export default function Home() {
   const animationRef = useRef<number | null>(null);
   const playbackTokenRef = useRef(0);
   const transportRef = useRef<TransportState | null>(null);
-  const loopRef = useRef(true);
+  const loopRef = useRef(false);
   const loopRangeRef = useRef({ startStep: 0, endStep: DEFAULT_PROJECT_STEPS });
   const loopRangeTouchedRef = useRef(false);
   const playheadStepRef = useRef(0);
@@ -1760,7 +1760,7 @@ export default function Home() {
   const [futureCount, setFutureCount] = useState(0);
   const [bpm, setBpm] = useState(132);
   const [scale, setScale] = useState<ScaleId>("hirajoshi");
-  const [loop, setLoop] = useState(true);
+  const [loop, setLoop] = useState(false);
   const [loopStartStep, setLoopStartStep] = useState(0);
   const [loopEndStep, setLoopEndStep] = useState(DEFAULT_PROJECT_STEPS);
   const [volume, setVolume] = useState(0.72);
@@ -1973,8 +1973,11 @@ export default function Home() {
     audioGraphRef.current = graph;
     const secondsPerBeat = 60 / bpm;
     const projectSteps = projectEndStep(shapesRef.current);
-    const looping = loopRef.current;
     const selectedRange = loopRangeRef.current;
+    const looping =
+      loopRef.current &&
+      requestedStep >= selectedRange.startStep &&
+      requestedStep < selectedRange.endStep;
     const rangeStartStep = looping
       ? clamp(selectedRange.startStep, 0, Math.max(0, projectSteps - STEPS_PER_BEAT))
       : requestedStep >= projectSteps
@@ -1987,10 +1990,11 @@ export default function Home() {
           Math.max(projectSteps, rangeStartStep + STEPS_PER_BEAT),
         )
       : projectSteps;
-    const playbackStep =
-      looping && (requestedStep < rangeStartStep || requestedStep >= rangeEndStep)
-        ? rangeStartStep
-        : clamp(requestedStep, rangeStartStep, Math.max(rangeStartStep, rangeEndStep - 1));
+    const playbackStep = clamp(
+      requestedStep >= projectSteps ? 0 : requestedStep,
+      rangeStartStep,
+      Math.max(rangeStartStep, rangeEndStep - 1),
+    );
     setPlayheadPosition(playbackStep);
     const rangeStartSeconds =
       rangeStartStep / STEPS_PER_BEAT * secondsPerBeat;
@@ -2341,7 +2345,7 @@ export default function Home() {
             typeof project.loopStartStep === "number" &&
               typeof project.loopEndStep === "number",
           );
-          const nextLoop = project.loop !== false;
+          const nextLoop = project.loop === true;
           loopRef.current = nextLoop;
           setLoop(nextLoop);
           if (fromShare) showToast("共享作品已载入，可以直接 Remix");
@@ -2749,11 +2753,6 @@ export default function Home() {
     );
     const wasPlaying = playing;
     if (wasPlaying) stopPlayback(false);
-    if (!loopRef.current) {
-      loopRef.current = true;
-      setLoop(true);
-      setSaved(false);
-    }
     if (action === "start" || action === "end" || action === "move") {
       timelineDragRef.current = {
         kind: `loop-${action}`,
@@ -2776,7 +2775,6 @@ export default function Home() {
       endStep,
       wasPlaying,
     };
-    setPlayheadPosition(startStep);
   };
 
   const onLoopRangePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -2816,13 +2814,6 @@ export default function Home() {
     timelineDragRef.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    const range = loopRangeRef.current;
-    if (
-      playheadStepRef.current < range.startStep ||
-      playheadStepRef.current >= range.endStep
-    ) {
-      setPlayheadPosition(range.startStep);
     }
     if (drag.wasPlaying) void startPlayback(playheadStepRef.current);
   };
@@ -3011,7 +3002,7 @@ export default function Home() {
       setScale(project.scale);
       setProjectTitle(project.title);
       setSwing(project.swing ?? 0.56);
-      const importedLoop = project.loop !== false;
+      const importedLoop = project.loop === true;
       loopRef.current = importedLoop;
       setLoop(importedLoop);
       updateLoopRange(
@@ -3145,6 +3136,15 @@ export default function Home() {
         if (!event.repeat) void play();
         return;
       }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) {
+          stopPlayback();
+          navigateToStep(0);
+        }
+        return;
+      }
       const target = event.target as HTMLElement | null;
       if (
         target?.closest(
@@ -3184,7 +3184,7 @@ export default function Home() {
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
     };
-  }, [deleteSelected, play, redo, undo, zoomTimeline]);
+  }, [deleteSelected, navigateToStep, play, redo, stopPlayback, undo, zoomTimeline]);
 
   const instrumentCounts = useMemo(
     () =>
@@ -3695,7 +3695,7 @@ export default function Home() {
                     />
                   )}
                   <span className="cycle-label" aria-hidden="true">
-                    ↻ 第 {loopStartBar}–{loopEndBar} 小节
+                    {loop ? "↻" : "范围"} 第 {loopStartBar}–{loopEndBar} 小节
                   </span>
                   {loopEndVisible && (
                     <button
@@ -3719,7 +3719,9 @@ export default function Home() {
                   )}
                 </div>
               )}
-              <span className="cycle-ruler-hint">点击创建 · 拖动移动 · 两端调整</span>
+              <span className="cycle-ruler-hint">
+                {loop ? "点击创建 · 拖动移动 · 两端调整" : "循环关闭 · 可先调整范围"}
+              </span>
             </div>
             <div
               className="timeline-ruler"
@@ -3784,7 +3786,7 @@ export default function Home() {
             {tool === "select" && "拖动声音事件改变时间与音高，右侧可精确编辑 · V"}
             {tool === "erase" && "划过声音事件即可擦除 · E"}
             {tool === "pan" && "拖动画布前往任意时间；触控板横向滑动，鼠标滚轮也可浏览 · H"}
-            <span>上方拖动播放头定位 · 黄色范围控制片段循环 · SPACE 播放 / 暂停</span>
+            <span>拖动播放头定位 · SPACE 播放 / 暂停 · ENTER 停止并返回开头</span>
           </p>
         </section>
 
