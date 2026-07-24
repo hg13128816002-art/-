@@ -58,6 +58,8 @@ test("server-renders the finished Synesthesia Canvas shell", async () => {
   assert.match(html, /Swing/);
   assert.match(html, /导入工程/);
   assert.match(html, /分享工程/);
+  assert.match(html, /片段循环/);
+  assert.match(html, /点击创建 · 拖动移动 · 两端调整/);
   assert.match(html, /icon\.svg/);
 
   const drumNames = ["活力鼓组", "和祭太鼓", "像素鼓机", "故障切片鼓", "霓虹祭典鼓"];
@@ -110,6 +112,17 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.doesNotMatch(page, /<strong>56% Swing/);
   assert.doesNotMatch(page, /\bvocal\b|泡沫人声/);
   assert.match(page, /setInterval\(pump/);
+  assert.match(page, /const startPlayback = useCallback/);
+  assert.match(page, /rangeStartSeconds/);
+  assert.match(page, /startOffsetSeconds/);
+  assert.match(page, /timelineDragRef/);
+  assert.match(page, /data-loop-action="start"/);
+  assert.match(page, /data-loop-action="end"/);
+  assert.match(page, /role="slider"/);
+  assert.match(page, /aria-label="播放头"/);
+  assert.match(page, /stopPlayback\(false\)/);
+  assert.match(page, /loopStartStep/);
+  assert.match(page, /loopEndStep/);
   assert.match(page, /viewStartStep/);
   assert.match(page, /timelineZoomStops/);
   assert.match(page, /applyTimelineZoom/);
@@ -151,6 +164,10 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(page, /onPointerDown/);
   assert.match(page, /E 平调子/);
   assert.match(css, /timeline-navigation/);
+  assert.match(css, /\.cycle-ruler/);
+  assert.match(css, /\.cycle-range/);
+  assert.match(css, /\.cycle-handle/);
+  assert.match(css, /\.timeline-playhead-handle/);
   assert.match(css, /\.timeline-zoom input\[type="range"\]/);
   assert.match(css, /cursor: ew-resize/);
   assert.match(css, /\.canvas-frame[\s\S]*?overscroll-behavior: none/);

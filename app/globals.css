@@ -665,7 +665,7 @@ input::selection {
 
 .stage {
   display: grid;
-  grid-template-rows: 44px 68px minmax(0, 1fr) 28px;
+  grid-template-rows: 44px 100px minmax(0, 1fr) 28px;
   padding: 12px 14px 10px;
   overflow: hidden;
   border-radius: var(--radius-stage);
@@ -750,7 +750,7 @@ input::selection {
 .timeline-strip {
   min-width: 0;
   display: grid;
-  grid-template-rows: 38px 26px;
+  grid-template-rows: 38px 30px 26px;
   gap: 2px;
 }
 
@@ -932,17 +932,120 @@ input::selection {
   line-height: 1.1;
 }
 
+.cycle-ruler,
 .timeline-ruler {
   position: relative;
   min-width: 0;
   overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+
+.cycle-ruler {
+  border-radius: 10px;
+  background: #f0f0f5;
+  cursor: crosshair;
+}
+
+.cycle-range {
+  position: absolute;
+  z-index: 2;
+  top: 2px;
+  bottom: 2px;
+  min-width: 4px;
+  overflow: visible;
+  border-radius: 8px;
+  background: var(--sun);
+  color: var(--text);
+  cursor: grab;
+  opacity: 0.58;
+  transition: opacity 140ms ease, filter 140ms ease;
+}
+
+.cycle-ruler.is-active .cycle-range {
+  opacity: 1;
+}
+
+.cycle-range:active {
+  cursor: grabbing;
+  filter: brightness(0.98);
+}
+
+.cycle-handle {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: var(--coral);
+  cursor: ew-resize;
+}
+
+.cycle-handle::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 6px;
+  width: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.cycle-handle--start {
+  left: 0;
+}
+
+.cycle-handle--end {
+  right: 0;
+}
+
+.cycle-handle:focus-visible,
+.timeline-ruler:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--primary) 35%, transparent);
+  outline-offset: -3px;
+}
+
+.cycle-label {
+  position: absolute;
+  inset: 0 18px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 820;
+  pointer-events: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cycle-ruler-hint {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  right: 9px;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 680;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.timeline-ruler {
+  border-radius: 8px;
+  background: #f8f8fa;
   color: var(--muted);
   font-family: var(--font-geist-mono), monospace;
   font-size: 8px;
+  cursor: ew-resize;
 }
 
 .timeline-ruler span {
   position: absolute;
+  z-index: 1;
   bottom: 4px;
   padding: 3px 6px;
   border-radius: 999px;
@@ -950,6 +1053,34 @@ input::selection {
   line-height: 1;
   white-space: nowrap;
   transform: translateX(4px);
+  pointer-events: none;
+}
+
+.timeline-playhead-handle {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  opacity: 0;
+  background: var(--coral);
+  pointer-events: none;
+  transform: translateX(-1.5px);
+}
+
+.timeline-playhead-handle.is-visible {
+  opacity: 1;
+}
+
+.timeline-playhead-handle i {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: 11px;
+  height: 11px;
+  border-radius: 4px 4px 7px 7px;
+  background: var(--coral);
+  transform: translateX(-50%) rotate(45deg);
 }
 
 .canvas-frame {
@@ -3342,5 +3473,15 @@ input[type="range"] {
   .rhythm-segments button,
   .rhythm-actions > button {
     border: 1px solid CanvasText;
+  }
+}
+
+@media (max-width: 520px) {
+  .cycle-ruler-hint {
+    display: none;
+  }
+
+  .cycle-label {
+    font-size: 8px;
   }
 }

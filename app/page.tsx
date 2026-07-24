@@ -8,6 +8,7 @@ import {
   useState,
   type ChangeEvent as ReactChangeEvent,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createWavHeader, encodePcm16, suggestWavFile, type WavWritableStream } from "./wav";
@@ -101,8 +102,12 @@ type PreparedEvent = {
 type TransportState = {
   token: number;
   origin: number;
+  startTime: number;
+  startOffsetSeconds: number;
+  rangeStartSeconds: number;
   duration: number;
   secondsPerBeat: number;
+  looping: boolean;
   cycle: number;
   eventIndex: number;
   events: PreparedEvent[];
@@ -115,6 +120,9 @@ type StoredProject = {
   scale: ScaleId;
   title: string;
   swing?: number;
+  loop?: boolean;
+  loopStartStep?: number;
+  loopEndStep?: number;
 };
 
 type CompactShape = [
@@ -134,7 +142,24 @@ type CompactShareProject = {
   s: ScaleId;
   t: string;
   w: number;
+  l?: 0 | 1;
+  r?: [startStep: number, endStep: number];
 };
+
+type TimelineDrag =
+  | {
+      kind: "playhead";
+      pointerId: number;
+      wasPlaying: boolean;
+    }
+  | {
+      kind: "loop-start" | "loop-end" | "loop-move";
+      pointerId: number;
+      originStep: number;
+      startStep: number;
+      endStep: number;
+      wasPlaying: boolean;
+    };
 
 type RhythmPatternId =
   | "fourOnFloor"
@@ -448,6 +473,17 @@ function compactProject(project: StoredProject): CompactShareProject {
     s: project.scale,
     t: project.title.slice(0, 36),
     w: Math.round((project.swing ?? 0.56) * SHARE_QUANTIZE),
+    l: project.loop === false ? 0 : 1,
+    r:
+      Number.isFinite(project.loopStartStep) && Number.isFinite(project.loopEndStep)
+        ? [
+            Math.max(0, Math.round(project.loopStartStep as number)),
+            Math.max(
+              STEPS_PER_BEAT,
+              Math.round(project.loopEndStep as number),
+            ),
+          ]
+        : undefined,
     n: project.shapes.map((shape) => [
       INSTRUMENTS.findIndex((instrument) => instrument.id === shape.instrument),
       Math.round(shape.startStep),
@@ -503,6 +539,15 @@ function expandCompactProject(value: unknown): StoredProject | null {
     scale: project.s,
     title: project.t.slice(0, 36),
     swing: clamp((project.w as number) / SHARE_QUANTIZE, 0.5, 0.66),
+    loop: project.l !== 0,
+    loopStartStep:
+      Array.isArray(project.r) && Number.isFinite(project.r[0])
+        ? Math.max(0, Math.round(project.r[0]))
+        : undefined,
+    loopEndStep:
+      Array.isArray(project.r) && Number.isFinite(project.r[1])
+        ? Math.max(STEPS_PER_BEAT, Math.round(project.r[1]))
+        : undefined,
   };
 }
 
@@ -527,6 +572,15 @@ function normalizeStoredProject(value: unknown): StoredProject | null {
     scale: project.scale,
     title: project.title.slice(0, 36),
     swing: typeof project.swing === "number" ? clamp(project.swing, 0.5, 0.66) : 0.56,
+    loop: project.loop !== false,
+    loopStartStep:
+      typeof project.loopStartStep === "number"
+        ? Math.max(0, Math.round(project.loopStartStep))
+        : undefined,
+    loopEndStep:
+      typeof project.loopEndStep === "number"
+        ? Math.max(STEPS_PER_BEAT, Math.round(project.loopEndStep))
+        : undefined,
   };
 }
 
@@ -1683,6 +1737,10 @@ export default function Home() {
   const playbackTokenRef = useRef(0);
   const transportRef = useRef<TransportState | null>(null);
   const loopRef = useRef(true);
+  const loopRangeRef = useRef({ startStep: 0, endStep: DEFAULT_PROJECT_STEPS });
+  const loopRangeTouchedRef = useRef(false);
+  const playheadStepRef = useRef(0);
+  const timelineDragRef = useRef<TimelineDrag | null>(null);
   const viewStartStepRef = useRef(0);
   const viewBarsRef = useRef(DEFAULT_VIEW_BARS);
   const viewStepsRef = useRef(DEFAULT_VIEW_STEPS);
@@ -1703,6 +1761,8 @@ export default function Home() {
   const [bpm, setBpm] = useState(132);
   const [scale, setScale] = useState<ScaleId>("hirajoshi");
   const [loop, setLoop] = useState(true);
+  const [loopStartStep, setLoopStartStep] = useState(0);
+  const [loopEndStep, setLoopEndStep] = useState(DEFAULT_PROJECT_STEPS);
   const [volume, setVolume] = useState(0.72);
   const [muted, setMuted] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -1798,6 +1858,36 @@ export default function Home() {
     showToast("已重做");
   }, [setShapesDirect, showToast, syncStacks]);
 
+  const setPlayheadPosition = useCallback((step: number) => {
+    const projectSteps = projectEndStep(shapesRef.current);
+    const nextStep = clamp(Math.round(step), 0, projectSteps);
+    playheadStepRef.current = nextStep;
+    setPlayheadBeat(nextStep / STEPS_PER_BEAT);
+    return nextStep;
+  }, []);
+
+  const updateLoopRange = useCallback(
+    (startStep: number, endStep: number, touched = true) => {
+      const projectSteps = projectEndStep(shapesRef.current);
+      const safeStart = clamp(
+        Math.round(startStep),
+        0,
+        Math.max(0, projectSteps - STEPS_PER_BEAT),
+      );
+      const safeEnd = clamp(
+        Math.max(safeStart + STEPS_PER_BEAT, Math.round(endStep)),
+        safeStart + STEPS_PER_BEAT,
+        projectSteps,
+      );
+      loopRangeRef.current = { startStep: safeStart, endStep: safeEnd };
+      loopRangeTouchedRef.current = touched;
+      setLoopStartStep(safeStart);
+      setLoopEndStep(safeEnd);
+      if (touched) setSaved(false);
+    },
+    [],
+  );
+
   const stopPlayback = useCallback((reset = true) => {
     playbackTokenRef.current += 1;
     if (schedulerRef.current) clearInterval(schedulerRef.current);
@@ -1822,8 +1912,8 @@ export default function Home() {
     audioSourcesRef.current.clear();
     audioGraphRef.current = null;
     setPlaying(false);
-    if (reset) setPlayheadBeat(0);
-  }, []);
+    if (reset) setPlayheadPosition(0);
+  }, [setPlayheadPosition]);
 
   const navigateToStep = useCallback((step: number) => {
     const next = Math.max(0, Math.round(step));
@@ -1861,16 +1951,12 @@ export default function Home() {
     [applyTimelineZoom],
   );
 
-  const play = useCallback(async () => {
-    if (playing) {
-      stopPlayback();
-      return;
-    }
+  const startPlayback = useCallback(async (requestedStep = playheadStepRef.current) => {
     if (shapesRef.current.length === 0) {
       showToast("先画下一个声音，或载入示例段落");
       return;
     }
-    stopPlayback();
+    stopPlayback(false);
     const AudioCtor = window.AudioContext;
     if (!AudioCtor) {
       showToast("当前浏览器不支持 Web Audio");
@@ -1886,21 +1972,61 @@ export default function Home() {
     const graph = createAudioGraph(context, bpm, muted ? 0 : volume);
     audioGraphRef.current = graph;
     const secondsPerBeat = 60 / bpm;
-    const duration = projectEndStep(shapesRef.current) / STEPS_PER_BEAT * secondsPerBeat;
-    const origin = context.currentTime + START_DELAY_SECONDS;
+    const projectSteps = projectEndStep(shapesRef.current);
+    const looping = loopRef.current;
+    const selectedRange = loopRangeRef.current;
+    const rangeStartStep = looping
+      ? clamp(selectedRange.startStep, 0, Math.max(0, projectSteps - STEPS_PER_BEAT))
+      : requestedStep >= projectSteps
+        ? 0
+        : clamp(requestedStep, 0, projectSteps);
+    const rangeEndStep = looping
+      ? clamp(
+          selectedRange.endStep,
+          rangeStartStep + STEPS_PER_BEAT,
+          Math.max(projectSteps, rangeStartStep + STEPS_PER_BEAT),
+        )
+      : projectSteps;
+    const playbackStep =
+      looping && (requestedStep < rangeStartStep || requestedStep >= rangeEndStep)
+        ? rangeStartStep
+        : clamp(requestedStep, rangeStartStep, Math.max(rangeStartStep, rangeEndStep - 1));
+    setPlayheadPosition(playbackStep);
+    const rangeStartSeconds =
+      rangeStartStep / STEPS_PER_BEAT * secondsPerBeat;
+    const rangeEndSeconds =
+      rangeEndStep / STEPS_PER_BEAT * secondsPerBeat;
+    const duration = Math.max(0.01, rangeEndSeconds - rangeStartSeconds);
+    const startOffsetSeconds =
+      (playbackStep - rangeStartStep) / STEPS_PER_BEAT * secondsPerBeat;
+    const startTime = context.currentTime + START_DELAY_SECONDS;
+    const origin = startTime - startOffsetSeconds;
     const events = shapesRef.current
       .map((shape) => ({
         shape: { ...shape },
-        offsetSeconds: shapeStartBeat(shape, swing) * secondsPerBeat,
+        offsetSeconds:
+          shapeStartBeat(shape, swing) * secondsPerBeat - rangeStartSeconds,
       }))
+      .filter(
+        (event) =>
+          event.offsetSeconds >= -LATE_GRACE_SECONDS &&
+          event.offsetSeconds < duration,
+      )
       .sort((left, right) => left.offsetSeconds - right.offsetSeconds);
+    const firstPlayableEvent = events.findIndex(
+      (event) => event.offsetSeconds >= startOffsetSeconds - EPSILON,
+    );
     transportRef.current = {
       token,
       origin,
+      startTime,
+      startOffsetSeconds,
+      rangeStartSeconds,
       duration,
       secondsPerBeat,
+      looping,
       cycle: 0,
-      eventIndex: 0,
+      eventIndex: firstPlayableEvent < 0 ? events.length : firstPlayableEvent,
       events,
     };
 
@@ -1909,7 +2035,7 @@ export default function Home() {
       if (!state || state.token !== playbackTokenRef.current) return;
       const now = context.currentTime;
       const horizon = now + LOOKAHEAD_SECONDS;
-      if (loopRef.current && now > state.origin + (state.cycle + 1) * state.duration) {
+      if (state.looping && now > state.origin + (state.cycle + 1) * state.duration) {
         const currentCycle = Math.max(0, Math.floor((now - state.origin) / state.duration));
         if (currentCycle > state.cycle) {
           state.cycle = currentCycle;
@@ -1939,13 +2065,13 @@ export default function Home() {
           continue;
         }
         if (cycleEnd > horizon) break;
-        if (!loopRef.current) break;
+        if (!state.looping) break;
         state.cycle += 1;
         state.eventIndex = 0;
       }
 
       const currentCycleEnd = state.origin + (state.cycle + 1) * state.duration;
-      if (!loopRef.current && now >= currentCycleEnd + effectTailSeconds(bpm)) {
+      if (!state.looping && now >= currentCycleEnd + effectTailSeconds(bpm)) {
         stopPlayback(false);
       }
     };
@@ -1959,13 +2085,18 @@ export default function Home() {
       const state = transportRef.current;
       if (!state) return;
       const elapsed = Math.max(0, context.currentTime - state.origin);
-      const currentCycleEnd = (state.cycle + 1) * state.duration;
-      const timelineSeconds = !loopRef.current && elapsed >= currentCycleEnd
-        ? state.duration
-        : elapsed % state.duration;
+      const timelineSeconds =
+        context.currentTime < state.startTime
+          ? state.startOffsetSeconds
+          : state.looping
+            ? elapsed % state.duration
+            : Math.min(state.duration, elapsed);
       const nextBeat = timelineSeconds / state.secondsPerBeat;
-      setPlayheadBeat(nextBeat);
-      const nextStep = nextBeat * STEPS_PER_BEAT;
+      const absoluteBeat =
+        state.rangeStartSeconds / state.secondsPerBeat + nextBeat;
+      const nextStep = absoluteBeat * STEPS_PER_BEAT;
+      playheadStepRef.current = nextStep;
+      setPlayheadBeat(absoluteBeat);
       const visibleSteps = viewStepsRef.current;
       if (
         nextStep < viewStartStepRef.current ||
@@ -1978,7 +2109,15 @@ export default function Home() {
       animationRef.current = requestAnimationFrame(animate);
     };
     animationRef.current = requestAnimationFrame(animate);
-  }, [bpm, muted, playing, scale, showToast, stopPlayback, swing, volume]);
+  }, [bpm, muted, scale, setPlayheadPosition, showToast, stopPlayback, swing, volume]);
+
+  const play = useCallback(async () => {
+    if (playing) {
+      stopPlayback(false);
+      return;
+    }
+    await startPlayback();
+  }, [playing, startPlayback, stopPlayback]);
 
   const drawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -2191,6 +2330,20 @@ export default function Home() {
           if (isScaleId(project.scale)) setScale(project.scale);
           if (typeof project.title === "string") setProjectTitle(project.title.slice(0, 36));
           if (typeof project.swing === "number") setSwing(clamp(project.swing, 0.5, 0.66));
+          const defaultLoopEnd = projectEndStep(safeShapes);
+          const storedLoopStart =
+            typeof project.loopStartStep === "number" ? project.loopStartStep : 0;
+          const storedLoopEnd =
+            typeof project.loopEndStep === "number" ? project.loopEndStep : defaultLoopEnd;
+          updateLoopRange(
+            storedLoopStart,
+            Math.max(storedLoopStart + STEPS_PER_BEAT, storedLoopEnd),
+            typeof project.loopStartStep === "number" &&
+              typeof project.loopEndStep === "number",
+          );
+          const nextLoop = project.loop !== false;
+          loopRef.current = nextLoop;
+          setLoop(nextLoop);
           if (fromShare) showToast("共享作品已载入，可以直接 Remix");
         } else if (fromShare) {
           throw new Error("Invalid shared project");
@@ -2205,17 +2358,43 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [showToast]);
+  }, [showToast, updateLoopRange]);
 
   useEffect(() => {
     if (!restoredRef.current) return;
     const timer = setTimeout(() => {
-      void saveStoredProject({ version: 2, shapes, bpm, scale, title: projectTitle, swing })
+      void saveStoredProject({
+        version: 2,
+        shapes,
+        bpm,
+        scale,
+        title: projectTitle,
+        swing,
+        loop,
+        loopStartStep,
+        loopEndStep,
+      })
         .then(() => setSaved(true))
         .catch(() => showToast("本机存储空间不足，但当前画布仍可继续创作"));
     }, 420);
     return () => clearTimeout(timer);
-  }, [bpm, projectTitle, scale, shapes, showToast, swing]);
+  }, [
+    bpm,
+    loop,
+    loopEndStep,
+    loopStartStep,
+    projectTitle,
+    scale,
+    shapes,
+    showToast,
+    swing,
+  ]);
+
+  useEffect(() => {
+    if (!loopRangeTouchedRef.current) {
+      updateLoopRange(0, projectEndStep(shapes), false);
+    }
+  }, [shapes, updateLoopRange]);
 
   useEffect(() => {
     loopRef.current = loop;
@@ -2504,6 +2683,160 @@ export default function Home() {
     return () => frame.removeEventListener("wheel", onCanvasWheel, true);
   }, [onCanvasWheel]);
 
+  const timelineStepAt = (element: HTMLElement, clientX: number, snap = 1) => {
+    const bounds = element.getBoundingClientRect();
+    const ratio = clamp((clientX - bounds.left) / Math.max(1, bounds.width));
+    const rawStep = viewStartStepRef.current + ratio * viewStepsRef.current;
+    return Math.max(0, Math.round(rawStep / snap) * snap);
+  };
+
+  const onPlayheadPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const wasPlaying = playing;
+    if (wasPlaying) stopPlayback(false);
+    timelineDragRef.current = {
+      kind: "playhead",
+      pointerId: event.pointerId,
+      wasPlaying,
+    };
+    setPlayheadPosition(timelineStepAt(event.currentTarget, event.clientX));
+  };
+
+  const onPlayheadPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = timelineDragRef.current;
+    if (drag?.kind !== "playhead" || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    setPlayheadPosition(timelineStepAt(event.currentTarget, event.clientX));
+  };
+
+  const onPlayheadPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = timelineDragRef.current;
+    if (drag?.kind !== "playhead" || drag.pointerId !== event.pointerId) return;
+    timelineDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (drag.wasPlaying) void startPlayback(playheadStepRef.current);
+  };
+
+  const onPlayheadKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const wasPlaying = playing;
+    if (wasPlaying) stopPlayback(false);
+    const stepSize = event.shiftKey ? STEPS_PER_BAR : STEPS_PER_BEAT;
+    const nextStep =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? projectEndStep(shapesRef.current)
+          : playheadStepRef.current + (event.key === "ArrowLeft" ? -stepSize : stepSize);
+    setPlayheadPosition(nextStep);
+    if (wasPlaying) void startPlayback(playheadStepRef.current);
+  };
+
+  const onLoopRangePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const action = (event.target as HTMLElement)
+      .closest<HTMLElement>("[data-loop-action]")
+      ?.dataset.loopAction;
+    const pointerStep = timelineStepAt(
+      event.currentTarget,
+      event.clientX,
+      STEPS_PER_BEAT,
+    );
+    const wasPlaying = playing;
+    if (wasPlaying) stopPlayback(false);
+    if (!loopRef.current) {
+      loopRef.current = true;
+      setLoop(true);
+      setSaved(false);
+    }
+    if (action === "start" || action === "end" || action === "move") {
+      timelineDragRef.current = {
+        kind: `loop-${action}`,
+        pointerId: event.pointerId,
+        originStep: pointerStep,
+        startStep: loopRangeRef.current.startStep,
+        endStep: loopRangeRef.current.endStep,
+        wasPlaying,
+      };
+      return;
+    }
+    const startStep = Math.floor(pointerStep / STEPS_PER_BAR) * STEPS_PER_BAR;
+    const endStep = startStep + Math.min(viewStepsRef.current, DEFAULT_VIEW_STEPS);
+    updateLoopRange(startStep, endStep);
+    timelineDragRef.current = {
+      kind: "loop-end",
+      pointerId: event.pointerId,
+      originStep: pointerStep,
+      startStep,
+      endStep,
+      wasPlaying,
+    };
+    setPlayheadPosition(startStep);
+  };
+
+  const onLoopRangePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = timelineDragRef.current;
+    if (!drag || drag.kind === "playhead" || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const pointerStep = timelineStepAt(
+      event.currentTarget,
+      event.clientX,
+      STEPS_PER_BEAT,
+    );
+    const deltaStep = pointerStep - drag.originStep;
+    if (drag.kind === "loop-start") {
+      updateLoopRange(
+        clamp(
+          drag.startStep + deltaStep,
+          0,
+          drag.endStep - STEPS_PER_BEAT,
+        ),
+        drag.endStep,
+      );
+    } else if (drag.kind === "loop-end") {
+      updateLoopRange(
+        drag.startStep,
+        Math.max(drag.startStep + STEPS_PER_BEAT, drag.endStep + deltaStep),
+      );
+    } else {
+      const durationSteps = drag.endStep - drag.startStep;
+      const startStep = Math.max(0, drag.startStep + deltaStep);
+      updateLoopRange(startStep, startStep + durationSteps);
+    }
+  };
+
+  const onLoopRangePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = timelineDragRef.current;
+    if (!drag || drag.kind === "playhead" || drag.pointerId !== event.pointerId) return;
+    timelineDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const range = loopRangeRef.current;
+    if (
+      playheadStepRef.current < range.startStep ||
+      playheadStepRef.current >= range.endStep
+    ) {
+      setPlayheadPosition(range.startStep);
+    }
+    if (drag.wasPlaying) void startPlayback(playheadStepRef.current);
+  };
+
+  const toggleLoop = () => {
+    const next = !loopRef.current;
+    const wasPlaying = playing;
+    if (wasPlaying) stopPlayback(false);
+    loopRef.current = next;
+    setLoop(next);
+    setSaved(false);
+    if (wasPlaying) void startPlayback(playheadStepRef.current);
+  };
+
   const updateSelected = (patch: Partial<SoundShape>) => {
     if (!selectedId) return;
     commitShapes(
@@ -2529,6 +2862,7 @@ export default function Home() {
     }
     stopPlayback();
     commitShapes([]);
+    updateLoopRange(0, DEFAULT_PROJECT_STEPS, false);
     setSelectedId(null);
     setClearArmed(false);
     showToast("画布已清空");
@@ -2536,7 +2870,9 @@ export default function Home() {
 
   const loadDemo = () => {
     stopPlayback();
-    commitShapes(createDemo());
+    const demoShapes = createDemo();
+    commitShapes(demoShapes);
+    updateLoopRange(0, projectEndStep(demoShapes), false);
     setSelectedId(null);
     setBpm(DEMO_PROJECT.bpm);
     setScale(DEMO_PROJECT.scale);
@@ -2608,6 +2944,9 @@ export default function Home() {
       scale,
       title: projectTitle,
       swing,
+      loop,
+      loopStartStep,
+      loopEndStep,
     };
     showToast("正在打包工程文件…");
     try {
@@ -2672,6 +3011,15 @@ export default function Home() {
       setScale(project.scale);
       setProjectTitle(project.title);
       setSwing(project.swing ?? 0.56);
+      const importedLoop = project.loop !== false;
+      loopRef.current = importedLoop;
+      setLoop(importedLoop);
+      updateLoopRange(
+        project.loopStartStep ?? 0,
+        project.loopEndStep ?? projectEndStep(project.shapes),
+        typeof project.loopStartStep === "number" &&
+          typeof project.loopEndStep === "number",
+      );
       navigateToStep(0);
       window.history.replaceState(
         null,
@@ -2871,8 +3219,19 @@ export default function Home() {
   const sixteenth = Math.floor((displayBeat % 1) * STEPS_PER_BEAT) + 1;
   const playheadStep = playheadBeat * STEPS_PER_BEAT;
   const playheadVisible =
-    playing && playheadStep >= viewStartStep && playheadStep <= viewStartStep + viewSteps;
+    playheadStep >= viewStartStep && playheadStep <= viewStartStep + viewSteps;
   const playheadLeft = (playheadStep - viewStartStep) / viewSteps * 100;
+  const visibleLoopStart = Math.max(loopStartStep, viewStartStep);
+  const visibleLoopEnd = Math.min(loopEndStep, viewStartStep + viewSteps);
+  const loopRangeVisible = visibleLoopEnd > visibleLoopStart;
+  const loopRangeLeft = (visibleLoopStart - viewStartStep) / viewSteps * 100;
+  const loopRangeWidth = (visibleLoopEnd - visibleLoopStart) / viewSteps * 100;
+  const loopStartVisible =
+    loopStartStep >= viewStartStep && loopStartStep <= viewStartStep + viewSteps;
+  const loopEndVisible =
+    loopEndStep >= viewStartStep && loopEndStep <= viewStartStep + viewSteps;
+  const loopStartBar = Math.floor(loopStartStep / STEPS_PER_BAR) + 1;
+  const loopEndBar = Math.max(loopStartBar, Math.ceil(loopEndStep / STEPS_PER_BAR));
   const visibleBarMarkers: { step: number; bar: number; left: number }[] = [];
   const markerStrideSteps = timelineMarkerStride(viewBars) * STEPS_PER_BAR;
   const firstVisibleBarStep = Math.ceil(viewStartStep / STEPS_PER_BAR) * STEPS_PER_BAR;
@@ -3297,10 +3656,96 @@ export default function Home() {
                 <button type="button" onClick={() => navigateToStep(Math.max(0, totalSteps - viewSteps))} title="跳到作品结尾">›|</button>
               </div>
             </div>
-            <div className="timeline-ruler" aria-hidden="true">
+            <div
+              className={`cycle-ruler ${loop ? "is-active" : ""}`}
+              aria-label={`循环范围，第 ${loopStartBar} 至第 ${loopEndBar} 小节`}
+              onPointerDown={onLoopRangePointerDown}
+              onPointerMove={onLoopRangePointerMove}
+              onPointerUp={onLoopRangePointerUp}
+              onPointerCancel={onLoopRangePointerUp}
+            >
+              {loopRangeVisible && (
+                <div
+                  className="cycle-range"
+                  data-loop-action="move"
+                  style={{
+                    left: `${loopRangeLeft}%`,
+                    width: `${loopRangeWidth}%`,
+                  }}
+                >
+                  {loopStartVisible && (
+                    <button
+                      type="button"
+                      className="cycle-handle cycle-handle--start"
+                      data-loop-action="start"
+                      aria-label="调整循环起点"
+                      onKeyDown={(event) => {
+                        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                        event.preventDefault();
+                        updateLoopRange(
+                          clamp(
+                            loopStartStep +
+                              (event.key === "ArrowLeft" ? -STEPS_PER_BEAT : STEPS_PER_BEAT),
+                            0,
+                            loopEndStep - STEPS_PER_BEAT,
+                          ),
+                          loopEndStep,
+                        );
+                      }}
+                    />
+                  )}
+                  <span className="cycle-label" aria-hidden="true">
+                    ↻ 第 {loopStartBar}–{loopEndBar} 小节
+                  </span>
+                  {loopEndVisible && (
+                    <button
+                      type="button"
+                      className="cycle-handle cycle-handle--end"
+                      data-loop-action="end"
+                      aria-label="调整循环终点"
+                      onKeyDown={(event) => {
+                        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                        event.preventDefault();
+                        updateLoopRange(
+                          loopStartStep,
+                          Math.max(
+                            loopStartStep + STEPS_PER_BEAT,
+                            loopEndStep +
+                              (event.key === "ArrowLeft" ? -STEPS_PER_BEAT : STEPS_PER_BEAT),
+                          ),
+                        );
+                      }}
+                    />
+                  )}
+                </div>
+              )}
+              <span className="cycle-ruler-hint">点击创建 · 拖动移动 · 两端调整</span>
+            </div>
+            <div
+              className="timeline-ruler"
+              role="slider"
+              tabIndex={0}
+              aria-label="播放头"
+              aria-valuemin={0}
+              aria-valuemax={Math.round(totalSteps)}
+              aria-valuenow={Math.round(playheadStep)}
+              aria-valuetext={`第 ${bar} 小节，第 ${beat} 拍`}
+              onKeyDown={onPlayheadKeyDown}
+              onPointerDown={onPlayheadPointerDown}
+              onPointerMove={onPlayheadPointerMove}
+              onPointerUp={onPlayheadPointerUp}
+              onPointerCancel={onPlayheadPointerUp}
+            >
               {visibleBarMarkers.map((item) => (
                 <span key={item.step} style={{ left: `${item.left}%` }}>第 {item.bar} 小节</span>
               ))}
+              <div
+                className={`timeline-playhead-handle ${playheadVisible ? "is-visible" : ""}`}
+                style={{ left: `${playheadLeft}%` }}
+                aria-hidden="true"
+              >
+                <i />
+              </div>
             </div>
           </div>
           <div ref={canvasFrameRef} className={`canvas-frame tool-${tool}`}>
@@ -3339,7 +3784,7 @@ export default function Home() {
             {tool === "select" && "拖动声音事件改变时间与音高，右侧可精确编辑 · V"}
             {tool === "erase" && "划过声音事件即可擦除 · E"}
             {tool === "pan" && "拖动画布前往任意时间；触控板横向滑动，鼠标滚轮也可浏览 · H"}
-            <span>SPACE 播放 / 停止 · − 压缩 · + 拉长 · Ctrl/⌘/Alt + 滚轮缩放</span>
+            <span>上方拖动播放头定位 · 黄色范围控制片段循环 · SPACE 播放 / 暂停</span>
           </p>
         </section>
 
@@ -3445,8 +3890,8 @@ export default function Home() {
 
       <footer className="transport" aria-label="播放控制">
         <div className="transport-left">
-          <button type="button" className={`loop-button ${loop ? "is-active" : ""}`} aria-pressed={loop} onClick={() => setLoop((value) => !value)}>↻ 循环 <span>{loop ? "开启" : "关闭"}</span></button>
-          <button type="button" onClick={() => { stopPlayback(); setPlayheadBeat(0); navigateToStep(0); }} aria-label="停止并回到开头">■ 停止</button>
+          <button type="button" className={`loop-button ${loop ? "is-active" : ""}`} aria-pressed={loop} onClick={toggleLoop}>↻ 片段循环 <span>{loop ? `${loopStartBar}–${loopEndBar} 小节` : "关闭"}</span></button>
+          <button type="button" onClick={() => { stopPlayback(); navigateToStep(0); }} aria-label="停止并回到开头">■ 停止</button>
         </div>
         <div className="transport-main">
           <div className="position-readout"><span>播放位置</span><strong>{String(bar).padStart(2, "0")} : {String(beat).padStart(2, "0")} : {String(sixteenth).padStart(2, "0")}</strong></div>
@@ -3454,10 +3899,10 @@ export default function Home() {
             type="button"
             className={`play-button ${playing ? "is-playing" : ""}`}
             onClick={() => void play()}
-            aria-label={playing ? "停止播放" : "播放序列"}
+            aria-label={playing ? "暂停播放" : "播放序列"}
           >
-            <span aria-hidden="true">{playing ? "■" : "▶"}</span>
-            <strong>{playing ? "停止播放" : "播放作品"}</strong>
+            <span aria-hidden="true">{playing ? "Ⅱ" : "▶"}</span>
+            <strong>{playing ? "暂停播放" : "播放作品"}</strong>
           </button>
           <div className="duration-readout"><span>{totalBars} 小节</span><strong>{formatDuration(totalDuration)}</strong></div>
         </div>
