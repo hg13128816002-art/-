@@ -1745,6 +1745,9 @@ export default function Home() {
   const viewBarsRef = useRef(DEFAULT_VIEW_BARS);
   const viewStepsRef = useRef(DEFAULT_VIEW_STEPS);
   const wheelStepRemainderRef = useRef(0);
+  const wheelZoomRemainderRef = useRef(0);
+  const lastWheelZoomAtRef = useRef(0);
+  const canvasPointerGuardUntilRef = useRef(0);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoredRef = useRef(false);
@@ -1859,8 +1862,7 @@ export default function Home() {
   }, [setShapesDirect, showToast, syncStacks]);
 
   const setPlayheadPosition = useCallback((step: number) => {
-    const projectSteps = projectEndStep(shapesRef.current);
-    const nextStep = clamp(Math.round(step), 0, projectSteps);
+    const nextStep = Math.max(0, Math.round(step));
     playheadStepRef.current = nextStep;
     setPlayheadBeat(nextStep / STEPS_PER_BEAT);
     return nextStep;
@@ -1980,18 +1982,18 @@ export default function Home() {
       requestedStep < selectedRange.endStep;
     const rangeStartStep = looping
       ? clamp(selectedRange.startStep, 0, Math.max(0, projectSteps - STEPS_PER_BEAT))
-      : requestedStep >= projectSteps
-        ? 0
-        : clamp(requestedStep, 0, projectSteps);
+      : Math.max(0, requestedStep);
     const rangeEndStep = looping
       ? clamp(
           selectedRange.endStep,
           rangeStartStep + STEPS_PER_BEAT,
           Math.max(projectSteps, rangeStartStep + STEPS_PER_BEAT),
         )
-      : projectSteps;
+      : requestedStep >= projectSteps
+        ? requestedStep + Math.max(DEFAULT_VIEW_STEPS, viewStepsRef.current)
+        : projectSteps;
     const playbackStep = clamp(
-      requestedStep >= projectSteps ? 0 : requestedStep,
+      requestedStep,
       rangeStartStep,
       Math.max(rangeStartStep, rangeEndStep - 1),
     );
@@ -2525,6 +2527,13 @@ export default function Home() {
   };
 
   const onCanvasPointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (
+      !event.isPrimary ||
+      event.button !== 0 ||
+      performance.now() < canvasPointerGuardUntilRef.current
+    ) {
+      return;
+    }
     const point = pointFromEvent(event);
     event.currentTarget.setPointerCapture(event.pointerId);
     if (tool === "pan") {
@@ -2594,6 +2603,22 @@ export default function Home() {
   const onCanvasPointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const interaction = interactionRef.current;
     if (!interaction || interaction.pointerId !== event.pointerId) return;
+    if (
+      performance.now() < canvasPointerGuardUntilRef.current ||
+      (event.pointerType === "mouse" && (event.buttons & 1) === 0)
+    ) {
+      const snapshot = gestureSnapshotRef.current;
+      if (snapshot && gestureChangedRef.current) {
+        setShapesDirect(snapshot);
+        setSelectedId((current) =>
+          current && snapshot.some((shape) => shape.id === current) ? current : null,
+        );
+      }
+      interactionRef.current = null;
+      gestureSnapshotRef.current = null;
+      gestureChangedRef.current = false;
+      return;
+    }
     const point = pointFromEvent(event);
     if (interaction.kind === "pan") {
       const bounds = event.currentTarget.getBoundingClientRect();
@@ -2645,9 +2670,25 @@ export default function Home() {
     finishGesture();
   };
 
+  const cancelCanvasGestureForScroll = useCallback(() => {
+    const snapshot = gestureSnapshotRef.current;
+    if (snapshot && gestureChangedRef.current) {
+      setShapesDirect(snapshot);
+      setSelectedId((current) =>
+        current && snapshot.some((shape) => shape.id === current) ? current : null,
+      );
+    }
+    interactionRef.current = null;
+    gestureSnapshotRef.current = null;
+    gestureChangedRef.current = false;
+  }, [setShapesDirect]);
+
   const onCanvasWheel = useCallback((event: WheelEvent) => {
     event.preventDefault();
     event.stopPropagation();
+    const gestureTime = performance.now();
+    canvasPointerGuardUntilRef.current = gestureTime + 240;
+    cancelCanvasGestureForScroll();
     const canvas = canvasRef.current;
     if (!canvas) return;
     if (event.ctrlKey || event.metaKey || event.altKey) {
@@ -2659,10 +2700,29 @@ export default function Home() {
       const zoomDelta =
         Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
       if (zoomDelta !== 0) {
-        zoomTimeline(zoomDelta > 0 ? "compress" : "stretch", anchorStep, anchorRatio);
+        const normalizedDelta =
+          zoomDelta * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 120 : 1);
+        const accumulated = wheelZoomRemainderRef.current;
+        wheelZoomRemainderRef.current =
+          accumulated !== 0 && Math.sign(accumulated) !== Math.sign(normalizedDelta)
+            ? normalizedDelta
+            : accumulated + normalizedDelta;
+        if (
+          Math.abs(wheelZoomRemainderRef.current) >= 72 &&
+          gestureTime - lastWheelZoomAtRef.current >= 180
+        ) {
+          zoomTimeline(
+            wheelZoomRemainderRef.current > 0 ? "compress" : "stretch",
+            anchorStep,
+            anchorRatio,
+          );
+          wheelZoomRemainderRef.current = 0;
+          lastWheelZoomAtRef.current = gestureTime;
+        }
       }
       return;
     }
+    wheelZoomRemainderRef.current = 0;
     const bounds = canvas.getBoundingClientRect();
     const horizontalGesture =
       Math.abs(event.deltaX) > 0.01 &&
@@ -2678,7 +2738,7 @@ export default function Home() {
     if (wholeSteps !== 0) {
       navigateToStep(viewStartStepRef.current + wholeSteps);
     }
-  }, [navigateToStep, zoomTimeline]);
+  }, [cancelCanvasGestureForScroll, navigateToStep, zoomTimeline]);
 
   useEffect(() => {
     const frame = canvasFrameRef.current;
@@ -3213,11 +3273,16 @@ export default function Home() {
         : closestIndex,
     0,
   );
-  const displayBeat = Math.min(Math.max(0, playheadBeat), Math.max(0, totalBeats - EPSILON));
+  const displayBeat = Math.max(0, playheadBeat);
   const bar = Math.floor(displayBeat / BEATS_PER_BAR) + 1;
   const beat = Math.floor(displayBeat % BEATS_PER_BAR) + 1;
   const sixteenth = Math.floor((displayBeat % 1) * STEPS_PER_BEAT) + 1;
   const playheadStep = playheadBeat * STEPS_PER_BEAT;
+  const timelineMaxStep = Math.max(
+    totalSteps,
+    viewStartStep + viewSteps,
+    Math.ceil(playheadStep),
+  );
   const playheadVisible =
     playheadStep >= viewStartStep && playheadStep <= viewStartStep + viewSteps;
   const playheadLeft = (playheadStep - viewStartStep) / viewSteps * 100;
@@ -3617,6 +3682,15 @@ export default function Home() {
                 <button type="button" onClick={() => navigateToStep(0)} title="回到开头">|‹</button>
                 <button type="button" onClick={() => navigateToStep(viewStartStep - viewSteps)} title={`向前 ${viewBars} 小节`}>‹</button>
                 <button type="button" onClick={() => navigateToStep(viewStartStep - STEPS_PER_BAR)} title="向前一小节">−1</button>
+                <button
+                  type="button"
+                  className={`timeline-loop-toggle ${loop ? "is-active" : ""}`}
+                  aria-pressed={loop}
+                  onClick={toggleLoop}
+                  title={loop ? "关闭片段循环" : "开启片段循环"}
+                >
+                  ↻ <span>{loop ? `${loopStartBar}–${loopEndBar}` : "循环"}</span>
+                </button>
               </div>
               <label>
                 <span>无限画布 · 跳到小节</span>
@@ -3729,7 +3803,7 @@ export default function Home() {
               tabIndex={0}
               aria-label="播放头"
               aria-valuemin={0}
-              aria-valuemax={Math.round(totalSteps)}
+              aria-valuemax={Math.round(timelineMaxStep)}
               aria-valuenow={Math.round(playheadStep)}
               aria-valuetext={`第 ${bar} 小节，第 ${beat} 拍`}
               onKeyDown={onPlayheadKeyDown}
@@ -3892,7 +3966,6 @@ export default function Home() {
 
       <footer className="transport" aria-label="播放控制">
         <div className="transport-left">
-          <button type="button" className={`loop-button ${loop ? "is-active" : ""}`} aria-pressed={loop} onClick={toggleLoop}>↻ 片段循环 <span>{loop ? `${loopStartBar}–${loopEndBar} 小节` : "关闭"}</span></button>
           <button type="button" onClick={() => { stopPlayback(); navigateToStep(0); }} aria-label="停止并回到开头">■ 停止</button>
         </div>
         <div className="transport-main">

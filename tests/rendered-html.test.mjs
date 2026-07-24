@@ -121,6 +121,7 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(page, /rangeStartSeconds/);
   assert.match(page, /startOffsetSeconds/);
   assert.match(page, /timelineDragRef/);
+  assert.match(page, /timeline-loop-toggle/);
   assert.match(page, /data-loop-action="start"/);
   assert.match(page, /data-loop-action="end"/);
   assert.match(page, /role="slider"/);
@@ -135,7 +136,15 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(page, /aria-label="时间轴缩放"/);
   assert.match(page, /aria-valuetext=\{`一屏显示 \$\{viewBars\} 小节`\}/);
   assert.match(page, /wheelStepRemainderRef/);
+  assert.match(page, /wheelZoomRemainderRef/);
+  assert.match(page, /lastWheelZoomAtRef/);
+  assert.match(page, /Math\.abs\(wheelZoomRemainderRef\.current\) >= 72/);
+  assert.match(page, /gestureTime - lastWheelZoomAtRef\.current >= 180/);
   assert.match(page, /horizontalGesture/);
+  assert.match(page, /canvasPointerGuardUntilRef/);
+  assert.match(page, /cancelCanvasGestureForScroll/);
+  assert.match(page, /event\.buttons & 1/);
+  assert.match(page, /gestureTime \+ 240/);
   assert.match(page, /addEventListener\("wheel", onCanvasWheel, \{ passive: false, capture: true \}\)/);
   assert.match(page, /removeEventListener\("wheel", onCanvasWheel, true\)/);
   assert.match(page, /ref=\{canvasFrameRef\}/);
@@ -143,6 +152,14 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(page, /window\.addEventListener\("keydown", onKeyDown, true\)/);
   assert.match(page, /window\.addEventListener\("keyup", onKeyUp, true\)/);
   assert.match(page, /if \(!event\.repeat\) void play\(\)/);
+  const playheadSetter = page.slice(
+    page.indexOf("const setPlayheadPosition"),
+    page.indexOf("const updateLoopRange"),
+  );
+  assert.match(playheadSetter, /Math\.max\(0, Math\.round\(step\)\)/);
+  assert.doesNotMatch(playheadSetter, /projectEndStep|clamp/);
+  assert.match(page, /const displayBeat = Math\.max\(0, playheadBeat\)/);
+  assert.match(page, /requestedStep \+ Math\.max\(DEFAULT_VIEW_STEPS, viewStepsRef\.current\)/);
   const keyboardHandler = page.slice(
     page.indexOf("const onKeyDown = (event: KeyboardEvent)"),
     page.indexOf('window.addEventListener("keydown", onKeyDown, true)'),
