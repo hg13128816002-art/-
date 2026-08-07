@@ -56,7 +56,7 @@ type ScaleId =
   | "pentatonic"
   | "phrygianDominant"
   | "wholeTone";
-type ScaleGroup = "和风五声" | "旋律调式" | "电子色彩";
+type ScaleGroup = "五声调式" | "旋律调式" | "电子色彩";
 
 type ScaleDefinition = {
   name: string;
@@ -111,6 +111,7 @@ type TransportState = {
   cycle: number;
   eventIndex: number;
   events: PreparedEvent[];
+  scheduledEventIds: Map<number, Set<string>>;
 };
 
 type StoredProject = {
@@ -192,7 +193,17 @@ type RhythmPatternDefinition = {
 };
 
 type Interaction =
-  | { kind: "draw"; pointerId: number; lastStep: number; lastY: number }
+  | {
+      kind: "draw";
+      pointerId: number;
+      startStep: number;
+      startY: number;
+      startClientX: number;
+      startClientY: number;
+      lastStep: number;
+      lastY: number;
+      hasStarted: boolean;
+    }
   | { kind: "erase"; pointerId: number; lastStep: number; lastY: number }
   | {
       kind: "stamp";
@@ -225,6 +236,7 @@ type Interaction =
     };
 
 const EPSILON = 0.0001;
+const DRAW_INTENT_THRESHOLD_PX = 4;
 const STEPS_PER_BEAT = 4;
 const BEATS_PER_BAR = 4;
 const STEPS_PER_BAR = STEPS_PER_BEAT * BEATS_PER_BAR;
@@ -235,6 +247,10 @@ const DEFAULT_PROJECT_STEPS = DEFAULT_VIEW_STEPS;
 const MAX_NOTE_STEPS = 64;
 const LOOKAHEAD_SECONDS = 0.24;
 const LATE_GRACE_SECONDS = 0.08;
+const MAX_LATE_SCHEDULE_SECONDS = 0.025;
+const MIN_SCHEDULE_LEAD_SECONDS = 0.006;
+const MAX_EVENTS_PER_SCHEDULER_TICK = 96;
+const SIDECHAIN_ATTACK_SECONDS = 0.008;
 const SCHEDULER_TICK_MS = 40;
 const START_DELAY_SECONDS = 0.08;
 const PROJECT_DB = "synesthesia-canvas-v2";
@@ -279,7 +295,7 @@ const INSTRUMENTS: Instrument[] = [
   {
     id: "strings",
     code: "04",
-    name: "樱花弦乐",
+    name: "流光弦乐",
     subtitle: "柔和 · 有延展",
     color: "#8a68ff",
     accent: "#20c8ff",
@@ -289,7 +305,7 @@ const INSTRUMENTS: Instrument[] = [
   {
     id: "pluck",
     code: "05",
-    name: "电光三味线",
+    name: "电光拨弦",
     subtitle: "圆润 · 木质弹拨",
     color: "#ffe600",
     accent: "#ff3f9b",
@@ -319,8 +335,8 @@ const INSTRUMENTS: Instrument[] = [
   {
     id: "flute",
     code: "08",
-    name: "竹风主奏",
-    subtitle: "清亮 · 和风呼吸",
+    name: "清风主奏",
+    subtitle: "清亮 · 通透呼吸",
     color: "#a7e51c",
     accent: "#7657ff",
     form: "drop",
@@ -339,8 +355,8 @@ const INSTRUMENTS: Instrument[] = [
   {
     id: "taiko",
     code: "10",
-    name: "和祭太鼓",
-    subtitle: "深沉 · 祭典回响",
+    name: "深层重鼓",
+    subtitle: "深沉 · 空间回响",
     color: "#ff334f",
     accent: "#ffd600",
     form: "ring",
@@ -369,7 +385,7 @@ const INSTRUMENTS: Instrument[] = [
   {
     id: "festivalDrums",
     code: "13",
-    name: "霓虹祭典鼓",
+    name: "霓虹派对鼓",
     subtitle: "明亮 · 拍手铃音",
     color: "#ff8a00",
     accent: "#ffe600",
@@ -402,11 +418,11 @@ const INSTRUMENT_GROUPS = [
 ] as const;
 
 const SCALES: Record<ScaleId, ScaleDefinition> = {
-  hirajoshi: { name: "E 平调子", root: 40, intervals: [0, 2, 3, 7, 8], group: "和风五声" },
-  in: { name: "D 阴音阶 · 樱花", root: 38, intervals: [0, 1, 5, 7, 8], group: "和风五声" },
-  insen: { name: "D 阴旋音阶", root: 38, intervals: [0, 1, 5, 7, 10], group: "和风五声" },
-  iwato: { name: "E 岩户音阶", root: 40, intervals: [0, 1, 5, 6, 10], group: "和风五声" },
-  yo: { name: "D 阳音阶", root: 38, intervals: [0, 2, 5, 7, 9], group: "和风五声" },
+  hirajoshi: { name: "E 暗色五声音阶", root: 40, intervals: [0, 2, 3, 7, 8], group: "五声调式" },
+  in: { name: "D 半音五声音阶", root: 38, intervals: [0, 1, 5, 7, 8], group: "五声调式" },
+  insen: { name: "D 开放五声音阶", root: 38, intervals: [0, 1, 5, 7, 10], group: "五声调式" },
+  iwato: { name: "E 紧张五声音阶", root: 40, intervals: [0, 1, 5, 6, 10], group: "五声调式" },
+  yo: { name: "D 明亮五声音阶", root: 38, intervals: [0, 2, 5, 7, 9], group: "五声调式" },
   major: { name: "C 自然大调", root: 36, intervals: [0, 2, 4, 5, 7, 9, 11], group: "旋律调式" },
   minor: { name: "F♯ 自然小调", root: 42, intervals: [0, 2, 3, 5, 7, 8, 10], group: "旋律调式" },
   harmonicMinor: { name: "F♯ 和声小调", root: 42, intervals: [0, 2, 3, 5, 7, 8, 11], group: "旋律调式" },
@@ -417,7 +433,7 @@ const SCALES: Record<ScaleId, ScaleDefinition> = {
   wholeTone: { name: "C 全音音阶", root: 36, intervals: [0, 2, 4, 6, 8, 10], group: "电子色彩" },
 };
 
-const SCALE_GROUPS: ScaleGroup[] = ["和风五声", "旋律调式", "电子色彩"];
+const SCALE_GROUPS: ScaleGroup[] = ["五声调式", "旋律调式", "电子色彩"];
 const SCALE_ENTRIES = Object.entries(SCALES) as [ScaleId, ScaleDefinition][];
 
 const TOOL_ITEMS: { id: ToolId; key: string; glyph: string; label: string }[] = [
@@ -1068,6 +1084,41 @@ function projectEndStep(shapes: SoundShape[]) {
   return Math.ceil(end / STEPS_PER_BAR) * STEPS_PER_BAR;
 }
 
+function prepareTransportEvents(
+  shapes: SoundShape[],
+  swing: number,
+  secondsPerBeat: number,
+  rangeStartSeconds: number,
+  duration: number,
+) {
+  return shapes
+    .map((shape) => ({
+      shape: { ...shape },
+      offsetSeconds:
+        shapeStartBeat(shape, swing) * secondsPerBeat - rangeStartSeconds,
+    }))
+    .filter(
+      (event) =>
+        event.offsetSeconds >= -LATE_GRACE_SECONDS &&
+        event.offsetSeconds < duration,
+    )
+    .sort((left, right) => left.offsetSeconds - right.offsetSeconds);
+}
+
+function firstTransportEventAtOrAfter(
+  events: PreparedEvent[],
+  offsetSeconds: number,
+) {
+  let low = 0;
+  let high = events.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (events[middle].offsetSeconds < offsetSeconds) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
 function timelineZoomStops(projectBars: number) {
   const maximum = Math.max(BASE_PREVIEW_BARS, Math.ceil(projectBars));
   const stops: number[] = [];
@@ -1136,6 +1187,15 @@ function registerSource(
   source.addEventListener("ended", () => bucket.delete(source), { once: true });
 }
 
+function makeSoftClipCurve(samples = 2048) {
+  const curve = new Float32Array(samples);
+  for (let index = 0; index < samples; index += 1) {
+    const input = index / (samples - 1) * 2 - 1;
+    curve[index] = Math.tanh(input * 1.55) * 0.9;
+  }
+  return curve;
+}
+
 function createAudioGraph(context: BaseAudioContext, bpm: number, volume: number): AudioGraph {
   const tonal = context.createGain();
   const drums = context.createGain();
@@ -1145,7 +1205,10 @@ function createAudioGraph(context: BaseAudioContext, bpm: number, volume: number
   const feedback = context.createGain();
   const delayFilter = context.createBiquadFilter();
   const wet = context.createGain();
+  const dcBlocker = context.createBiquadFilter();
   const compressor = context.createDynamicsCompressor();
+  const limiter = context.createDynamicsCompressor();
+  const softClip = context.createWaveShaper();
   const master = context.createGain();
 
   tonal.gain.value = 0.72;
@@ -1156,12 +1219,22 @@ function createAudioGraph(context: BaseAudioContext, bpm: number, volume: number
   delayFilter.type = "lowpass";
   delayFilter.frequency.value = 5600;
   wet.gain.value = 0.13;
+  dcBlocker.type = "highpass";
+  dcBlocker.frequency.value = 24;
+  dcBlocker.Q.value = 0.7;
   compressor.threshold.value = -12;
   compressor.knee.value = 6;
   compressor.ratio.value = 10;
   compressor.attack.value = 0.003;
   compressor.release.value = 0.12;
-  master.gain.value = volume * 0.78;
+  limiter.threshold.value = -2.5;
+  limiter.knee.value = 0;
+  limiter.ratio.value = 20;
+  limiter.attack.value = 0.001;
+  limiter.release.value = 0.08;
+  softClip.curve = makeSoftClipCurve();
+  softClip.oversample = "4x";
+  master.gain.value = volume * 0.84;
 
   tonal.connect(pump);
   tonal.connect(delay);
@@ -1172,8 +1245,11 @@ function createAudioGraph(context: BaseAudioContext, bpm: number, volume: number
   feedback.connect(delay);
   pump.connect(mix);
   drums.connect(mix);
-  mix.connect(compressor);
-  compressor.connect(master);
+  mix.connect(dcBlocker);
+  dcBlocker.connect(compressor);
+  compressor.connect(limiter);
+  limiter.connect(softClip);
+  softClip.connect(master);
   master.connect(context.destination);
   return { tonal, drums, pump, master };
 }
@@ -1442,10 +1518,10 @@ function drumPieceName(shape: SoundShape) {
   if (!isDrumInstrument(shape.instrument)) return "旋律音符";
   const names: Record<DrumInstrumentId, Record<DrumZone, string>> = {
     drums: { low: "弹性底鼓", mid: "清脆军鼓", high: "亮色踩镲" },
-    taiko: { low: "大太鼓", mid: "締太鼓", high: "拍子木" },
+    taiko: { low: "低频重鼓", mid: "紧致中鼓", high: "木质击拍" },
     chipDrums: { low: "像素底鼓", mid: "8-bit 军鼓", high: "像素踩镲" },
     glitchDrums: { low: "切片底鼓", mid: "碎片军鼓", high: "故障点拍" },
-    festivalDrums: { low: "祭典重鼓", mid: "霓虹拍手", high: "铃音沙锤" },
+    festivalDrums: { low: "派对重鼓", mid: "霓虹拍手", high: "铃音沙锤" },
   };
   return names[shape.instrument][drumZone(shape.y)];
 }
@@ -1456,10 +1532,28 @@ function shapePitchLabel(shape: SoundShape, scale: ScaleId) {
     : midiToName(midiFromShape(shape, scale));
 }
 
-function triggerDrumPump(graph: AudioGraph, time: number, depth: number, release: number) {
-  graph.pump.gain.cancelScheduledValues(time);
-  graph.pump.gain.setValueAtTime(Math.max(EPSILON, depth), time);
-  graph.pump.gain.exponentialRampToValueAtTime(1, time + release);
+function triggerDrumPump(
+  context: BaseAudioContext,
+  graph: AudioGraph,
+  time: number,
+  depth: number,
+  release: number,
+) {
+  const gain = graph.pump.gain;
+  const attackStart = Math.max(
+    context.currentTime + 0.001,
+    time - SIDECHAIN_ATTACK_SECONDS,
+  );
+  const duckTime = time + 0.004;
+  if (typeof gain.cancelAndHoldAtTime === "function") {
+    gain.cancelAndHoldAtTime(attackStart);
+  } else {
+    const heldValue = Math.max(EPSILON, gain.value);
+    gain.cancelScheduledValues(attackStart);
+    gain.setValueAtTime(heldValue, attackStart);
+  }
+  gain.linearRampToValueAtTime(Math.max(EPSILON, depth), duckTime);
+  gain.exponentialRampToValueAtTime(1, duckTime + release);
 }
 
 function scheduleDrumOscillator(
@@ -1581,7 +1675,7 @@ function scheduleDrum(
       scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: 138, endFrequency: 48, pitchDuration: 0.07, duration: 0.58, level: velocity * 0.34, pan: pan * 0.18, filter: { type: "lowpass", frequency: 1100 } }, bucket);
       scheduleDrumOscillator(context, graph.drums, time, { type: "triangle", startFrequency: 78, endFrequency: 46, pitchDuration: 0.12, duration: 0.42, level: velocity * 0.12, pan: -pan * 0.12 }, bucket);
       scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.09, level: velocity * 0.07, pan, filter: { type: "bandpass", frequency: 240, q: 0.85 }, secondFilter: { type: "lowpass", frequency: 1500 } }, bucket);
-      triggerDrumPump(graph, time, 0.68, 0.14);
+      triggerDrumPump(context, graph, time, 0.68, 0.14);
     } else if (zone === "mid") {
       scheduleDrumOscillator(context, graph.drums, time, { type: "triangle", startFrequency: 270, endFrequency: 165, pitchDuration: 0.065, duration: 0.18, level: velocity * 0.13, pan: pan * 0.2 }, bucket);
       scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.14, level: velocity * 0.16, pan, filter: { type: "bandpass", frequency: 1900, q: 1.2 }, secondFilter: { type: "lowpass", frequency: 4800 } }, bucket);
@@ -1598,7 +1692,7 @@ function scheduleDrum(
     if (zone === "low") {
       scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: 110, endFrequency: 45, pitchDuration: 0.045, duration: 0.18, level: velocity * 0.28, pan: pan * 0.14 }, bucket);
       scheduleDrumOscillator(context, graph.drums, time, { type: "square", startFrequency: 220, endFrequency: 65, pitchDuration: 0.03, duration: 0.075, level: velocity * 0.052, pan: -pan * 0.12, filter: { type: "lowpass", frequency: 1700 } }, bucket);
-      triggerDrumPump(graph, time, 0.58, 0.12);
+      triggerDrumPump(context, graph, time, 0.58, 0.12);
     } else if (zone === "mid") {
       scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.1, level: velocity * 0.16, pan, filter: { type: "bandpass", frequency: 1800, q: 0.9 }, chip: { levels: 8, holdSamples: 6 } }, bucket);
       scheduleDrumOscillator(context, graph.drums, time, { type: "triangle", startFrequency: 190, endFrequency: 125, pitchDuration: 0.05, duration: 0.09, level: velocity * 0.07, pan: -pan * 0.2 }, bucket);
@@ -1617,7 +1711,7 @@ function scheduleDrum(
       scheduleDrumOscillator(context, graph.drums, time + 0.075, { type: "sine", startFrequency: 72, endFrequency: 46, pitchDuration: 0.018, duration: 0.025, level: velocity * 0.055, pan: -jitterPan }, bucket);
       scheduleDrumOscillator(context, graph.drums, time + 0.105, { type: "triangle", startFrequency: 68, endFrequency: 45, pitchDuration: 0.016, duration: 0.025, level: velocity * 0.04, pan: jitterPan }, bucket);
       scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.018, level: velocity * 0.035, pan: jitterPan, filter: { type: "highpass", frequency: 4200 } }, bucket);
-      triggerDrumPump(graph, time, 0.6, 0.11);
+      triggerDrumPump(context, graph, time, 0.6, 0.11);
     } else if (zone === "mid") {
       [0, 0.024, 0.048, 0.072].forEach((offset, index) => {
         scheduleDrumNoise(context, graph.drums, time + offset, seed ^ (index * 0x45d9), { duration: 0.013, level: velocity * (0.11 - index * 0.012), pan: index % 2 ? -jitterPan : jitterPan, filter: { type: "bandpass", frequency: 1100 + index * 700, q: 1.1 }, chip: { levels: 12, holdSamples: 4 } }, bucket);
@@ -1637,7 +1731,7 @@ function scheduleDrum(
       scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: 190, endFrequency: 50, pitchDuration: 0.038, duration: 0.27, level: velocity * 0.32, pan: pan * 0.14, filter: { type: "lowpass", frequency: 900 } }, bucket);
       scheduleDrumOscillator(context, graph.drums, time, { type: "triangle", startFrequency: 90, endFrequency: 48, pitchDuration: 0.075, duration: 0.18, level: velocity * 0.08, pan: -pan * 0.12 }, bucket);
       scheduleDrumNoise(context, graph.drums, time, seed, { duration: 0.013, level: velocity * 0.02, pan, filter: { type: "highpass", frequency: 5500 }, secondFilter: { type: "lowpass", frequency: 8200 } }, bucket);
-      triggerDrumPump(graph, time, 0.48, 0.15);
+      triggerDrumPump(context, graph, time, 0.48, 0.15);
     } else if (zone === "mid") {
       [0, 0.012, 0.025].forEach((offset, index) => {
         scheduleDrumNoise(context, graph.drums, time + offset, seed ^ (index * 0x85eb), { duration: index === 2 ? 0.16 : 0.05, level: velocity * [0.12, 0.1, 0.07][index], pan: index % 2 ? -pan : pan, filter: { type: "highpass", frequency: 800 }, secondFilter: { type: "lowpass", frequency: 7800 } }, bucket);
@@ -1654,7 +1748,7 @@ function scheduleDrum(
 
   if (zone === "low") {
     scheduleDrumOscillator(context, graph.drums, time, { type: "sine", startFrequency: 165, endFrequency: 45, pitchDuration: 0.1, duration: 0.24, level: velocity * 0.72, pan: pan * 0.2 }, bucket);
-    triggerDrumPump(graph, time, 0.48, 0.14);
+    triggerDrumPump(context, graph, time, 0.48, 0.14);
     return;
   }
 
@@ -1743,6 +1837,7 @@ export default function Home() {
   const audioGraphRef = useRef<AudioGraph | null>(null);
   const audioSourcesRef = useRef(new Set<AudioScheduledSourceNode>());
   const schedulerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const schedulerPumpRef = useRef<(() => void) | null>(null);
   const animationRef = useRef<number | null>(null);
   const playbackTokenRef = useRef(0);
   const transportRef = useRef<TransportState | null>(null);
@@ -1757,7 +1852,6 @@ export default function Home() {
   const wheelStepRemainderRef = useRef(0);
   const wheelZoomRemainderRef = useRef(0);
   const lastWheelZoomAtRef = useRef(0);
-  const canvasPointerGuardUntilRef = useRef(0);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoredRef = useRef(false);
@@ -1813,12 +1907,53 @@ export default function Home() {
   const selectedRhythmDefinition =
     RHYTHM_PATTERNS.find((pattern) => pattern.id === rhythmPattern) ?? RHYTHM_PATTERNS[0];
 
-  const setShapesDirect = useCallback((next: SoundShape[]) => {
-    shapesRef.current = next;
-    timelineShapesRef.current = [...next].sort((left, right) => left.startStep - right.startStep);
-    setShapes(next);
-    setSaved(false);
-  }, []);
+  const setShapesDirect = useCallback(
+    (next: SoundShape[]) => {
+      shapesRef.current = next;
+      timelineShapesRef.current = [...next].sort(
+        (left, right) => left.startStep - right.startStep,
+      );
+      setShapes(next);
+      setSaved(false);
+
+      const state = transportRef.current;
+      const context = audioContextRef.current;
+      if (!state || !context) return;
+
+      if (!state.looping) {
+        const projectEndSeconds =
+          projectEndStep(next) / STEPS_PER_BEAT * state.secondsPerBeat;
+        state.duration = Math.max(
+          state.duration,
+          projectEndSeconds - state.rangeStartSeconds,
+        );
+      }
+      state.events = prepareTransportEvents(
+        next,
+        swing,
+        state.secondsPerBeat,
+        state.rangeStartSeconds,
+        state.duration,
+      );
+
+      const now = context.currentTime;
+      const activeCycle = state.looping
+        ? Math.max(0, Math.floor((now - state.origin) / state.duration))
+        : 0;
+      const cycleStart = state.origin + activeCycle * state.duration;
+      const currentOffset =
+        now < state.startTime
+          ? state.startOffsetSeconds
+          : Math.max(0, now - cycleStart);
+      state.cycle = activeCycle;
+      state.eventIndex = firstTransportEventAtOrAfter(
+        state.events,
+        currentOffset - MAX_LATE_SCHEDULE_SECONDS,
+      );
+      queueMicrotask(() => schedulerPumpRef.current?.());
+    },
+    [swing],
+  );
 
   const syncStacks = useCallback(() => {
     setHistoryCount(historyRef.current.length);
@@ -1916,6 +2051,7 @@ export default function Home() {
     if (schedulerRef.current) clearInterval(schedulerRef.current);
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
     schedulerRef.current = null;
+    schedulerPumpRef.current = null;
     animationRef.current = null;
     transportRef.current = null;
     const now = audioContextRef.current?.currentTime ?? 0;
@@ -2028,20 +2164,12 @@ export default function Home() {
       (playbackStep - rangeStartStep) / STEPS_PER_BEAT * secondsPerBeat;
     const startTime = context.currentTime + START_DELAY_SECONDS;
     const origin = startTime - startOffsetSeconds;
-    const events = shapesRef.current
-      .map((shape) => ({
-        shape: { ...shape },
-        offsetSeconds:
-          shapeStartBeat(shape, swing) * secondsPerBeat - rangeStartSeconds,
-      }))
-      .filter(
-        (event) =>
-          event.offsetSeconds >= -LATE_GRACE_SECONDS &&
-          event.offsetSeconds < duration,
-      )
-      .sort((left, right) => left.offsetSeconds - right.offsetSeconds);
-    const firstPlayableEvent = events.findIndex(
-      (event) => event.offsetSeconds >= startOffsetSeconds - EPSILON,
+    const events = prepareTransportEvents(
+      shapesRef.current,
+      swing,
+      secondsPerBeat,
+      rangeStartSeconds,
+      duration,
     );
     transportRef.current = {
       token,
@@ -2053,8 +2181,12 @@ export default function Home() {
       secondsPerBeat,
       looping,
       cycle: 0,
-      eventIndex: firstPlayableEvent < 0 ? events.length : firstPlayableEvent,
+      eventIndex: firstTransportEventAtOrAfter(
+        events,
+        startOffsetSeconds - EPSILON,
+      ),
       events,
+      scheduledEventIds: new Map(),
     };
 
     const pump = () => {
@@ -2062,6 +2194,12 @@ export default function Home() {
       if (!state || state.token !== playbackTokenRef.current) return;
       const now = context.currentTime;
       const horizon = now + LOOKAHEAD_SECONDS;
+      const activeCycle = state.looping
+        ? Math.max(0, Math.floor((now - state.origin) / state.duration))
+        : 0;
+      for (const cycle of state.scheduledEventIds.keys()) {
+        if (cycle < activeCycle) state.scheduledEventIds.delete(cycle);
+      }
       if (state.looping && now > state.origin + (state.cycle + 1) * state.duration) {
         const currentCycle = Math.max(0, Math.floor((now - state.origin) / state.duration));
         if (currentCycle > state.cycle) {
@@ -2070,23 +2208,34 @@ export default function Home() {
         }
       }
 
-      while (true) {
+      let processedEvents = 0;
+      while (processedEvents < MAX_EVENTS_PER_SCHEDULER_TICK) {
         const cycleStart = state.origin + state.cycle * state.duration;
         const cycleEnd = cycleStart + state.duration;
         const event = state.events[state.eventIndex];
         if (event) {
           const eventTime = cycleStart + event.offsetSeconds;
           if (eventTime >= horizon) break;
-          if (eventTime >= now - LATE_GRACE_SECONDS) {
+          processedEvents += 1;
+          let scheduledInCycle = state.scheduledEventIds.get(state.cycle);
+          if (!scheduledInCycle) {
+            scheduledInCycle = new Set();
+            state.scheduledEventIds.set(state.cycle, scheduledInCycle);
+          }
+          if (
+            !scheduledInCycle.has(event.shape.id) &&
+            eventTime >= now - MAX_LATE_SCHEDULE_SECONDS
+          ) {
             scheduleShape(
               context,
               graph,
               event.shape,
-              Math.max(eventTime, now + 0.003),
+              Math.max(eventTime, now + MIN_SCHEDULE_LEAD_SECONDS),
               state.secondsPerBeat,
               scale,
               audioSourcesRef.current,
             );
+            scheduledInCycle.add(event.shape.id);
           }
           state.eventIndex += 1;
           continue;
@@ -2103,6 +2252,7 @@ export default function Home() {
       }
     };
 
+    schedulerPumpRef.current = pump;
     pump();
     schedulerRef.current = setInterval(pump, SCHEDULER_TICK_MS);
     setPlaying(true);
@@ -2576,11 +2726,7 @@ export default function Home() {
   };
 
   const onCanvasPointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (
-      !event.isPrimary ||
-      event.button !== 0 ||
-      performance.now() < canvasPointerGuardUntilRef.current
-    ) {
+    if (!event.isPrimary || event.button !== 0) {
       return;
     }
     const point = pointFromEvent(event);
@@ -2632,8 +2778,17 @@ export default function Home() {
     }
     gestureSnapshotRef.current = shapesRef.current;
     if (tool === "draw") {
-      interactionRef.current = { kind: "draw", pointerId: event.pointerId, lastStep: point.step, lastY: point.y };
-      addDrawShape(point.step, point.y);
+      interactionRef.current = {
+        kind: "draw",
+        pointerId: event.pointerId,
+        startStep: point.step,
+        startY: point.y,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        lastStep: point.step,
+        lastY: point.y,
+        hasStarted: false,
+      };
     } else if (tool === "erase") {
       interactionRef.current = { kind: "erase", pointerId: event.pointerId, lastStep: point.step, lastY: point.y };
       const hit = findShapeAt(point.step, point.y);
@@ -2675,10 +2830,7 @@ export default function Home() {
   const onCanvasPointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const interaction = interactionRef.current;
     if (!interaction || interaction.pointerId !== event.pointerId) return;
-    if (
-      performance.now() < canvasPointerGuardUntilRef.current ||
-      (event.pointerType === "mouse" && (event.buttons & 1) === 0)
-    ) {
+    if (event.pointerType === "mouse" && (event.buttons & 1) === 0) {
       if (interaction.kind === "lasso") {
         setSelectedId(null);
         setSelectedIds([]);
@@ -2739,6 +2891,27 @@ export default function Home() {
       );
       gestureChangedRef.current = true;
     } else if (interaction.kind === "draw") {
+      if (!interaction.hasStarted) {
+        const distance = Math.hypot(
+          event.clientX - interaction.startClientX,
+          event.clientY - interaction.startClientY,
+        );
+        if (distance < DRAW_INTENT_THRESHOLD_PX) return;
+        addDrawShape(interaction.startStep, interaction.startY);
+        if (
+          point.step !== interaction.startStep ||
+          Math.abs(point.y - interaction.startY) > 0.01
+        ) {
+          addDrawShape(point.step, point.y);
+        }
+        interactionRef.current = {
+          ...interaction,
+          lastStep: point.step,
+          lastY: point.y,
+          hasStarted: true,
+        };
+        return;
+      }
       if (Math.abs(point.step - interaction.lastStep) >= 1 || Math.abs(point.y - interaction.lastY) > 0.035) {
         addDrawShape(point.step, point.y);
         interactionRef.current = { ...interaction, lastStep: point.step, lastY: point.y };
@@ -2768,7 +2941,9 @@ export default function Home() {
   const onCanvasPointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const interaction = interactionRef.current;
     if (interaction?.pointerId !== event.pointerId) return;
-    if (interaction.kind === "lasso") {
+    if (interaction.kind === "draw" && !interaction.hasStarted) {
+      addDrawShape(interaction.startStep, interaction.startY);
+    } else if (interaction.kind === "lasso") {
       const matches = selectShapesInLasso(
         interaction.startStep,
         interaction.startY,
@@ -2804,11 +2979,15 @@ export default function Home() {
     setLassoRect(null);
   }, [setShapesDirect]);
 
+  const onCanvasPointerCancel = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (interactionRef.current?.pointerId !== event.pointerId) return;
+    cancelCanvasGestureForScroll();
+  };
+
   const onCanvasWheel = useCallback((event: WheelEvent) => {
     event.preventDefault();
     event.stopPropagation();
     const gestureTime = performance.now();
-    canvasPointerGuardUntilRef.current = gestureTime + 240;
     cancelCanvasGestureForScroll();
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -4013,7 +4192,8 @@ export default function Home() {
               onPointerDown={onCanvasPointerDown}
               onPointerMove={onCanvasPointerMove}
               onPointerUp={onCanvasPointerUp}
-              onPointerCancel={onCanvasPointerUp}
+              onPointerCancel={onCanvasPointerCancel}
+              onLostPointerCapture={onCanvasPointerCancel}
             />
             <div className={`playhead ${playheadVisible ? "is-visible" : ""}`} style={{ left: `${playheadLeft}%` }} aria-hidden="true">
               <span />
@@ -4049,7 +4229,7 @@ export default function Home() {
             )}
           </div>
           <p className="stage-help" id="canvas-help">
-            {tool === "draw" && "拖动画出一串量化音符 · B"}
+            {tool === "draw" && "点按画单个音符；拖动画出连续音符 · B"}
             {tool === "stamp" && "拖拽印章：横向长度控制音长，纵向距离控制力度 · S"}
             {tool === "select" && "拖动声音事件改变时间与音高，右侧可精确编辑 · V"}
             {tool === "lasso" && `框选当前音色「${getInstrument(instrument).name}」· Ctrl/Cmd+C 复制 · Ctrl/Cmd+V 从播放头粘贴 · L`}
