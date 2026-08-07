@@ -114,6 +114,17 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.doesNotMatch(page, /\bvocal\b|泡沫人声/);
   assert.match(page, /setInterval\(pump/);
   assert.match(page, /makeSoftClipCurve/);
+  assert.match(page, /makeLoopSafeNoiseBuffer/);
+  assert.match(page, /data\[data\.length - 1\] = seamValue/);
+  assert.match(page, /noiseGain\.gain\.exponentialRampToValueAtTime\(EPSILON, noiseStop\)/);
+  assert.doesNotMatch(page, /noiseGain\.gain\.value = level/);
+  assert.match(page, /function disconnectAudioNodes/);
+  assert.match(page, /dispose: \(\) =>/);
+  assert.match(page, /window\.setTimeout\(\(\) => graph\.dispose\(\), 80\)/);
+  assert.match(
+    page,
+    /amp\.gain\.exponentialRampToValueAtTime\(Math\.max\(EPSILON, releaseLevel\), end\)/,
+  );
   assert.match(page, /createWaveShaper\(\)/);
   assert.match(page, /softClip\.oversample = "4x"/);
   assert.match(page, /dcBlocker\.frequency\.value = 24/);

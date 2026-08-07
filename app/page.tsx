@@ -92,6 +92,7 @@ type AudioGraph = {
   drums: GainNode;
   pump: GainNode;
   master: GainNode;
+  dispose: () => void;
 };
 
 type PreparedEvent = {
@@ -1156,6 +1157,29 @@ function makeNoiseBuffer(context: BaseAudioContext, seconds: number, seed: numbe
   return buffer;
 }
 
+function makeLoopSafeNoiseBuffer(
+  context: BaseAudioContext,
+  seconds: number,
+  seed: number,
+) {
+  const buffer = makeNoiseBuffer(context, seconds, seed);
+  const data = buffer.getChannelData(0);
+  const seamSamples = Math.min(
+    Math.floor(context.sampleRate * 0.03),
+    Math.floor(data.length / 4),
+  );
+  if (seamSamples < 2) return buffer;
+  const seamValue = data[0];
+  for (let index = 0; index < seamSamples; index += 1) {
+    const progress = (index + 1) / seamSamples;
+    const blend = (1 - Math.cos(Math.PI * progress)) * 0.5;
+    const dataIndex = data.length - seamSamples + index;
+    data[dataIndex] = data[dataIndex] * (1 - blend) + seamValue * blend;
+  }
+  data[data.length - 1] = seamValue;
+  return buffer;
+}
+
 function makeChipNoiseBuffer(
   context: BaseAudioContext,
   seconds: number,
@@ -1185,6 +1209,16 @@ function registerSource(
   if (!bucket) return;
   bucket.add(source);
   source.addEventListener("ended", () => bucket.delete(source), { once: true });
+}
+
+function disconnectAudioNodes(nodes: AudioNode[]) {
+  for (const node of nodes) {
+    try {
+      node.disconnect();
+    } catch {
+      // Already-disconnected nodes require no further cleanup.
+    }
+  }
 }
 
 function makeSoftClipCurve(samples = 2048) {
@@ -1251,7 +1285,32 @@ function createAudioGraph(context: BaseAudioContext, bpm: number, volume: number
   limiter.connect(softClip);
   softClip.connect(master);
   master.connect(context.destination);
-  return { tonal, drums, pump, master };
+  let disposed = false;
+  return {
+    tonal,
+    drums,
+    pump,
+    master,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      disconnectAudioNodes([
+        tonal,
+        drums,
+        pump,
+        mix,
+        delay,
+        feedback,
+        delayFilter,
+        wet,
+        dcBlocker,
+        compressor,
+        limiter,
+        softClip,
+        master,
+      ]);
+    },
+  };
 }
 
 function connectWithPan(
@@ -1264,6 +1323,7 @@ function connectWithPan(
   panner.pan.value = clamp(pan, -0.72, 0.72);
   source.connect(panner);
   panner.connect(destination);
+  return panner;
 }
 
 function scheduleTone(
@@ -1302,7 +1362,8 @@ function scheduleTone(
     time,
   );
   filter.connect(amp);
-  connectWithPan(context, amp, graph.tonal, pan);
+  const outputPanner = connectWithPan(context, amp, graph.tonal, pan);
+  const voiceNodes: AudioNode[] = [filter, amp, outputPanner];
 
   const end = time + Math.max(0.07, seconds);
   amp.gain.setValueAtTime(EPSILON, time);
@@ -1322,6 +1383,7 @@ function scheduleTone(
     gain.gain.value = level;
     oscillator.connect(gain);
     gain.connect(filter);
+    voiceNodes.push(oscillator, gain);
     oscillator.start(time);
     oscillator.stop(end + 0.75);
     registerSource(oscillator, bucket);
@@ -1338,21 +1400,35 @@ function scheduleTone(
     const noise = context.createBufferSource();
     const noiseFilter = context.createBiquadFilter();
     const noiseGain = context.createGain();
-    noise.buffer = makeNoiseBuffer(
-      context,
-      loopNoise ? 0.22 : Math.min(0.42, Math.max(0.08, seconds)),
-      seed ^ 0x9e3779b9,
-    );
+    noise.buffer = loopNoise
+      ? makeLoopSafeNoiseBuffer(context, 1.5, seed ^ 0x9e3779b9)
+      : makeNoiseBuffer(
+          context,
+          Math.min(0.42, Math.max(0.08, seconds)),
+          seed ^ 0x9e3779b9,
+        );
     noise.loop = loopNoise;
     noiseFilter.type = filterType;
     noiseFilter.frequency.value = filterFrequency;
     noiseFilter.Q.value = filterType === "bandpass" ? 1.4 : 0.7;
-    noiseGain.gain.value = level;
+    const noiseStop = loopNoise
+      ? end + 0.2
+      : Math.min(end + 0.08, time + 0.5);
+    const noiseAttackEnd = Math.min(noiseStop - 0.025, time + 0.012);
+    const noiseFadeStart = Math.max(noiseAttackEnd, noiseStop - 0.045);
+    noiseGain.gain.setValueAtTime(EPSILON, time);
+    noiseGain.gain.exponentialRampToValueAtTime(
+      Math.max(EPSILON, level),
+      noiseAttackEnd,
+    );
+    noiseGain.gain.setValueAtTime(Math.max(EPSILON, level), noiseFadeStart);
+    noiseGain.gain.exponentialRampToValueAtTime(EPSILON, noiseStop);
     noise.connect(noiseFilter);
     noiseFilter.connect(noiseGain);
     noiseGain.connect(amp);
+    voiceNodes.push(noise, noiseFilter, noiseGain);
     noise.start(time);
-    noise.stop(loopNoise ? end + 0.2 : Math.min(end + 0.08, time + 0.5));
+    noise.stop(noiseStop + 0.01);
     registerSource(noise, bucket);
   };
 
@@ -1363,6 +1439,7 @@ function scheduleTone(
     lfoGain.gain.value = depth;
     lfo.connect(lfoGain);
     oscillators.forEach((oscillator) => lfoGain.connect(oscillator.detune));
+    voiceNodes.push(lfo, lfoGain);
     lfo.start(time);
     lfo.stop(end + 0.55);
     registerSource(lfo, bucket);
@@ -1423,6 +1500,14 @@ function scheduleTone(
     stringFeedback.connect(stringDelay);
     stringDelay.connect(stringLevel);
     stringLevel.connect(amp);
+    voiceNodes.push(
+      stringExciter,
+      exciterGain,
+      stringDelay,
+      stringDamping,
+      stringFeedback,
+      stringLevel,
+    );
     stringExciter.start(time);
     stringExciter.stop(time + 0.02);
     registerSource(stringExciter, bucket);
@@ -1481,7 +1566,7 @@ function scheduleTone(
   };
   const [sustain, release] = envelope[shape.instrument as TonalInstrumentId];
   const releaseLevel = sustain <= EPSILON ? EPSILON : velocity * sustain;
-  amp.gain.setValueAtTime(Math.max(EPSILON, releaseLevel), end);
+  amp.gain.exponentialRampToValueAtTime(Math.max(EPSILON, releaseLevel), end);
   amp.gain.exponentialRampToValueAtTime(EPSILON, end + release);
 
   if (
@@ -1497,11 +1582,27 @@ function scheduleTone(
     glitchGain.gain.exponentialRampToValueAtTime(velocity * 0.045, time + 0.06);
     glitchGain.gain.exponentialRampToValueAtTime(EPSILON, time + 0.095);
     glitch.connect(glitchGain);
-    connectWithPan(context, glitchGain, graph.tonal, -pan * 0.5);
+    const glitchPanner = connectWithPan(
+      context,
+      glitchGain,
+      graph.tonal,
+      -pan * 0.5,
+    );
+    glitch.addEventListener(
+      "ended",
+      () => disconnectAudioNodes([glitch, glitchGain, glitchPanner]),
+      { once: true },
+    );
     glitch.start(time + 0.05);
     glitch.stop(time + 0.11);
     registerSource(glitch, bucket);
   }
+
+  oscillators[0]?.addEventListener(
+    "ended",
+    () => disconnectAudioNodes(voiceNodes),
+    { once: true },
+  );
 }
 
 type DrumFilterSettings = {
@@ -1588,8 +1689,9 @@ function scheduleDrumOscillator(
     time + Math.min(0.003, settings.duration * 0.2),
   );
   amp.gain.exponentialRampToValueAtTime(EPSILON, time + settings.duration);
+  let filter: BiquadFilterNode | null = null;
   if (settings.filter) {
-    const filter = context.createBiquadFilter();
+    filter = context.createBiquadFilter();
     filter.type = settings.filter.type;
     filter.frequency.value = settings.filter.frequency;
     filter.Q.value = settings.filter.q ?? 0.7;
@@ -1598,7 +1700,15 @@ function scheduleDrumOscillator(
   } else {
     oscillator.connect(amp);
   }
-  connectWithPan(context, amp, destination, settings.pan);
+  const panner = connectWithPan(context, amp, destination, settings.pan);
+  oscillator.addEventListener(
+    "ended",
+    () =>
+      disconnectAudioNodes(
+        filter ? [oscillator, filter, amp, panner] : [oscillator, amp, panner],
+      ),
+    { once: true },
+  );
   oscillator.start(time);
   oscillator.stop(time + settings.duration + 0.03);
   registerSource(oscillator, bucket);
@@ -1651,7 +1761,17 @@ function scheduleDrumNoise(
   } else {
     filter.connect(amp);
   }
-  connectWithPan(context, amp, destination, settings.pan);
+  const panner = connectWithPan(context, amp, destination, settings.pan);
+  source.addEventListener(
+    "ended",
+    () =>
+      disconnectAudioNodes(
+        secondFilter
+          ? [source, filter, secondFilter, amp, panner]
+          : [source, filter, amp, panner],
+      ),
+    { once: true },
+  );
   source.start(time);
   source.stop(time + settings.duration + 0.025);
   registerSource(source, bucket);
@@ -2070,6 +2190,7 @@ export default function Home() {
     });
     audioSourcesRef.current.clear();
     audioGraphRef.current = null;
+    if (graph) window.setTimeout(() => graph.dispose(), 80);
     setPlaying(false);
     if (reset) setPlayheadPosition(0);
   }, [setPlayheadPosition]);
@@ -2635,6 +2756,8 @@ export default function Home() {
           // Cleanup after a completed source needs no action.
         }
       });
+      audioGraphRef.current?.dispose();
+      audioGraphRef.current = null;
       void audioContextRef.current?.close();
     },
     [],
