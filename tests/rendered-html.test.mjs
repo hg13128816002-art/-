@@ -135,6 +135,14 @@ test("ships the audio, canvas, export, sharing, and responsive product code", as
   assert.match(page, /MAX_LATE_SCHEDULE_SECONDS/);
   assert.match(page, /MAX_EVENTS_PER_SCHEDULER_TICK/);
   assert.match(page, /MIN_SCHEDULE_LEAD_SECONDS/);
+  assert.match(page, /function onsetDensityGain/);
+  assert.match(page, /FULL_LEVEL_ONSET_VOICES/);
+  assert.match(page, /Math\.sqrt\(FULL_LEVEL_ONSET_VOICES \/ voices\)/);
+  assert.match(page, /eventVelocity\(shape\) \* clamp\(levelScale, MIN_ONSET_GAIN, 1\)/);
+  assert.match(page, /preparedEvent\.offsetSeconds/);
+  assert.match(page, /preparedEvent\.startSeconds/);
+  assert.doesNotMatch(page, /const glitch = context\.createOscillator\(\)/);
+  assert.doesNotMatch(page, /glitch\.type = "square"/);
   assert.doesNotMatch(page, /Math\.max\(eventTime, now \+ 0\.003\)/);
   assert.match(page, /function prepareTransportEvents/);
   assert.match(page, /function firstTransportEventAtOrAfter/);

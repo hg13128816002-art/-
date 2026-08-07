@@ -252,6 +252,9 @@ const MAX_LATE_SCHEDULE_SECONDS = 0.025;
 const MIN_SCHEDULE_LEAD_SECONDS = 0.006;
 const MAX_EVENTS_PER_SCHEDULER_TICK = 96;
 const SIDECHAIN_ATTACK_SECONDS = 0.008;
+const ONSET_CLUSTER_SECONDS = 0.008;
+const FULL_LEVEL_ONSET_VOICES = 4;
+const MIN_ONSET_GAIN = 0.24;
 const SCHEDULER_TICK_MS = 40;
 const START_DELAY_SECONDS = 0.08;
 const PROJECT_DB = "synesthesia-canvas-v2";
@@ -1120,6 +1123,35 @@ function firstTransportEventAtOrAfter(
   return low;
 }
 
+function onsetDensityGain<T>(
+  events: T[],
+  index: number,
+  eventTime: (event: T) => number,
+) {
+  const center = eventTime(events[index]);
+  let first = index;
+  let last = index;
+  while (
+    first > 0 &&
+    center - eventTime(events[first - 1]) <= ONSET_CLUSTER_SECONDS
+  ) {
+    first -= 1;
+  }
+  while (
+    last + 1 < events.length &&
+    eventTime(events[last + 1]) - center <= ONSET_CLUSTER_SECONDS
+  ) {
+    last += 1;
+  }
+  const voices = last - first + 1;
+  if (voices <= FULL_LEVEL_ONSET_VOICES) return 1;
+  return clamp(
+    Math.sqrt(FULL_LEVEL_ONSET_VOICES / voices),
+    MIN_ONSET_GAIN,
+    1,
+  );
+}
+
 function timelineZoomStops(projectBars: number) {
   const maximum = Math.max(BASE_PREVIEW_BARS, Math.ceil(projectBars));
   const stops: number[] = [];
@@ -1334,9 +1366,10 @@ function scheduleTone(
   seconds: number,
   scale: ScaleId,
   bucket?: Set<AudioScheduledSourceNode>,
+  levelScale = 1,
 ) {
   const frequency = midiToFrequency(midiFromShape(shape, scale));
-  const velocity = eventVelocity(shape);
+  const velocity = eventVelocity(shape) * clamp(levelScale, MIN_ONSET_GAIN, 1);
   const pan = shape.pan * (shape.instrument === "bass" ? 0.32 : 0.72);
   const seed = hashString(shape.id);
   const variant = seed & 3;
@@ -1345,11 +1378,11 @@ function scheduleTone(
   filter.type = "lowpass";
   filter.Q.value =
     shape.instrument === "brass"
-      ? 4.5
+      ? 3.2
       : shape.instrument === "pluck"
-        ? 1.65
+        ? 1.45
         : shape.instrument === "bass"
-          ? 6.5
+          ? 3.4
           : 1.1;
   filter.frequency.setValueAtTime(
     shape.instrument === "strings"
@@ -1569,35 +1602,6 @@ function scheduleTone(
   amp.gain.exponentialRampToValueAtTime(Math.max(EPSILON, releaseLevel), end);
   amp.gain.exponentialRampToValueAtTime(EPSILON, end + release);
 
-  if (
-    variant === 3 &&
-    shape.durationSteps >= 4 &&
-    !["strings", "chord", "flute", "pluck"].includes(shape.instrument)
-  ) {
-    const glitch = context.createOscillator();
-    const glitchGain = context.createGain();
-    glitch.type = "square";
-    glitch.frequency.value = Math.min(10000, frequency * 2);
-    glitchGain.gain.setValueAtTime(EPSILON, time + 0.055);
-    glitchGain.gain.exponentialRampToValueAtTime(velocity * 0.045, time + 0.06);
-    glitchGain.gain.exponentialRampToValueAtTime(EPSILON, time + 0.095);
-    glitch.connect(glitchGain);
-    const glitchPanner = connectWithPan(
-      context,
-      glitchGain,
-      graph.tonal,
-      -pan * 0.5,
-    );
-    glitch.addEventListener(
-      "ended",
-      () => disconnectAudioNodes([glitch, glitchGain, glitchPanner]),
-      { once: true },
-    );
-    glitch.start(time + 0.05);
-    glitch.stop(time + 0.11);
-    registerSource(glitch, bucket);
-  }
-
   oscillators[0]?.addEventListener(
     "ended",
     () => disconnectAudioNodes(voiceNodes),
@@ -1783,9 +1787,10 @@ function scheduleDrum(
   shape: SoundShape,
   time: number,
   bucket?: Set<AudioScheduledSourceNode>,
+  levelScale = 1,
 ) {
   if (!isDrumInstrument(shape.instrument)) return;
-  const velocity = eventVelocity(shape);
+  const velocity = eventVelocity(shape) * clamp(levelScale, MIN_ONSET_GAIN, 1);
   const pan = shape.pan * 0.55;
   const seed = hashString(shape.id);
   const zone = drumZone(shape.y);
@@ -1888,9 +1893,10 @@ function scheduleShape(
   secondsPerBeat: number,
   scale: ScaleId,
   bucket?: Set<AudioScheduledSourceNode>,
+  levelScale = 1,
 ) {
   if (isDrumInstrument(shape.instrument)) {
-    scheduleDrum(context, graph, shape, time, bucket);
+    scheduleDrum(context, graph, shape, time, bucket, levelScale);
   } else {
     scheduleTone(
       context,
@@ -1900,6 +1906,7 @@ function scheduleShape(
       eventDuration(shape) * secondsPerBeat,
       scale,
       bucket,
+      levelScale,
     );
   }
 }
@@ -2355,6 +2362,11 @@ export default function Home() {
               state.secondsPerBeat,
               scale,
               audioSourcesRef.current,
+              onsetDensityGain(
+                state.events,
+                state.eventIndex,
+                (preparedEvent) => preparedEvent.offsetSeconds,
+              ),
             );
             scheduledInCycle.add(event.shape.id);
           }
@@ -3610,6 +3622,12 @@ export default function Home() {
             padFrames / sampleRate + event.startSeconds - renderStartSeconds,
             secondsPerBeat,
             scale,
+            undefined,
+            onsetDensityGain(
+              prepared,
+              eventIndex,
+              (preparedEvent) => preparedEvent.startSeconds,
+            ),
           );
           eventIndex += 1;
         }
